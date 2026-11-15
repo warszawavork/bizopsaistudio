@@ -315,3 +315,23 @@ export function fileToBase64(file: File): Promise<string> {
 export function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 3.8));
 }
+
+export async function fetchCloudTiles(presetId: string): Promise<{ success: boolean; tiles: any[]; count: number }> {
+  const res = await fetch(`/api/tiles?presetId=${encodeURIComponent(presetId)}`);
+  if (!res.ok) throw new Error(`Błąd pobierania kafelków z chmury: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function saveCloudTile(tile: any, presetId: string, authorName?: string): Promise<{ success: boolean; tile: any }> {
+  return postJson('/api/tiles', { action: 'save', tile, presetId, authorName });
+}
+
+export async function saveBatchCloudTiles(tiles: any[], presetId: string, authorName?: string): Promise<{ success: boolean; count: number }> {
+  return postJson('/api/tiles', { action: 'batch', tiles, presetId, authorName });
+}
+
+export async function deleteCloudTile(id: string): Promise<{ success: boolean }> {
+  const res = await fetch(`/api/tiles?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Błąd usuwania kafelka: HTTP ${res.status}`);
+  return res.json();
+}

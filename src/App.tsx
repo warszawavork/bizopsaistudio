@@ -27,7 +27,7 @@ import type {
   SalesReplyResult,
   WebhookConfig,
 } from './types';
-import { sendToWebhook } from './utils/apiClient';
+import { fetchCloudTiles, saveBatchCloudTiles, sendToWebhook } from './utils/apiClient';
 import { UI_TEXT } from './utils/i18n';
 import { SalesResponderView } from './components/SalesResponderView';
 import { AuditView } from './components/AuditView';
@@ -36,6 +36,7 @@ import { ChatView } from './components/ChatView';
 import { SettingsModal } from './components/SettingsModal';
 import { CustomProfileModal } from './components/CustomProfileModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
+import { ToastNotification, type ToastItem } from './components/ToastNotification';
 
 const STORAGE_TILES_PREFIX = 'bizops_tiles_v2_';
 const STORAGE_DEALS_PREFIX = 'bizops_deals_v2_';
@@ -149,6 +150,21 @@ export function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
+  const [floatingToasts, setFloatingToasts] = useState<ToastItem[]>([]);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'connected' | 'syncing' | 'error'>('connected');
+
+  const addFloatingToast = (item: Omit<ToastItem, 'id' | 'timestamp'>) => {
+    const newToast: ToastItem = {
+      id: `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      ...item,
+    };
+    setFloatingToasts((prev) => [newToast, ...prev.slice(0, 4)]);
+  };
+
+  const dismissFloatingToast = (id: string) => {
+    setFloatingToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   const preset = allPresets.find((p) => p.id === activePresetId) || allPresets[0];
   const currentTiles = tilesByPreset[preset.id] || preset.defaultTiles;
@@ -157,6 +173,98 @@ export function App() {
   const currentAudit = auditByPreset[preset.id] || null;
   const currentReply = replyByPreset[preset.id] || null;
   const ui = UI_TEXT[language];
+
+  // Neon Postgres Realtime Sync Effect
+  useEffect(() => {
+    let isMounted = true;
+
+    async function syncWithCloud(isInitial = false) {
+      try {
+        const res = await fetchCloudTiles(preset.id);
+        if (!isMounted || !res.success) return;
+
+        // If cloud table is empty for this preset, seed current tiles to Neon!
+        if (res.tiles.length === 0 && currentTiles.length > 0) {
+          await saveBatchCloudTiles(currentTiles, preset.id, 'Inicjalizacja');
+          if (isMounted) {
+            setCloudSyncStatus('connected');
+            if (isInitial) {
+              addFloatingToast({
+                type: 'sync',
+                title: 'Neon Postgres Aktywny',
+                message: `Baza w chmurze zainicjalizowana (${currentTiles.length} kafelków)`,
+              });
+            }
+          }
+          return;
+        }
+
+        const serverTiles = res.tiles;
+        const localMap = new Map(currentTiles.map((t) => [t.id, t]));
+        let hasNewOrUpdated = false;
+        let newestTileTitle = '';
+        let newestAuthor = '';
+
+        for (const st of serverTiles) {
+          const local = localMap.get(st.id);
+          if (!local) {
+            hasNewOrUpdated = true;
+            newestTileTitle = st.title;
+            newestAuthor = st.authorName || 'Zespół';
+            break;
+          }
+          if (local.content !== st.content || local.title !== st.title || local.enabled !== st.enabled) {
+            hasNewOrUpdated = true;
+            newestTileTitle = st.title;
+            newestAuthor = st.authorName || 'Zespół';
+            break;
+          }
+        }
+
+        if (hasNewOrUpdated || (isInitial && serverTiles.length !== currentTiles.length)) {
+          setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
+          if (!isInitial) {
+            addFloatingToast({
+              type: 'updated',
+              title: 'Wiedza zaktualizowana',
+              message: `Nowy kafelek: "${newestTileTitle || 'Reguła biznesowa'}"`,
+              authorName: newestAuthor,
+            });
+          }
+        }
+
+        if (isMounted) setCloudSyncStatus('connected');
+      } catch (err) {
+        console.warn('Błąd synchronizacji chmury Neon:', err);
+        if (isMounted) setCloudSyncStatus('error');
+      }
+    }
+
+    void syncWithCloud(true);
+
+    const interval = setInterval(() => {
+      void syncWithCloud(false);
+    }, 5000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [preset.id]);
+
+  const handleTilesChangeWithCloud = async (next: KnowledgeTile[]) => {
+    setTilesByPreset((prev) => ({ ...prev, [preset.id]: next }));
+    try {
+      await saveBatchCloudTiles(next, preset.id, 'Użytkownik');
+      addFloatingToast({
+        type: 'created',
+        title: 'Zapisano w chmurze',
+        message: 'Kafelek zsynchronizowany ze wszystkimi użytkownikami',
+      });
+    } catch (err) {
+      console.error('Błąd zapisu kafelka do chmury:', err);
+    }
+  };
 
   useEffect(() => {
     try {
@@ -341,6 +449,31 @@ export function App() {
                 <Plus className="h-3 w-3" />
                 Nowa
               </button>
+            </div>
+
+            <div
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold shadow-2xs transition ${
+                cloudSyncStatus === 'connected'
+                  ? 'border-emerald-200/80 bg-emerald-50 text-emerald-700'
+                  : cloudSyncStatus === 'syncing'
+                    ? 'border-sky-200/80 bg-sky-50 text-sky-700'
+                    : 'border-amber-200/80 bg-amber-50 text-amber-700'
+              }`}
+              title="Status bazy Neon Postgres w chmurze"
+            >
+              <span className="relative flex h-2 w-2">
+                <span
+                  className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                    cloudSyncStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
+                  }`}
+                ></span>
+                <span
+                  className={`relative inline-flex rounded-full h-2 w-2 ${
+                    cloudSyncStatus === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'
+                  }`}
+                ></span>
+              </span>
+              <span className="hidden sm:inline">Neon Sync</span>
             </div>
 
             <button
@@ -555,9 +688,7 @@ export function App() {
             preset={preset}
             tiles={currentTiles}
             language={language}
-            onTilesChange={(next) =>
-              setTilesByPreset((prev) => ({ ...prev, [preset.id]: next }))
-            }
+            onTilesChange={handleTilesChangeWithCloud}
             onResetPreset={handleResetPreset}
             onTestTileInChat={(prompt) => {
               setActiveTab('chat');
@@ -649,6 +780,9 @@ export function App() {
         onClose={() => setIntegrationsOpen(false)}
         onConfigSaved={() => showToast('Zapisano ustawienia integracji')}
       />
+
+      {/* Floating Realtime Cloud Toasts */}
+      <ToastNotification toasts={floatingToasts} onDismiss={dismissFloatingToast} />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import aiHandler from './api/ai';
 import webhookHandler from './api/webhook';
+import tilesHandler from './api/tiles';
 
 function localApiBridgePlugin(): Plugin {
   return {
@@ -14,6 +15,9 @@ function localApiBridgePlugin(): Plugin {
       });
       server.middlewares.use('/api/webhook', (req, res) => {
         void webhookHandler(req, res);
+      });
+      server.middlewares.use('/api/tiles', (req, res) => {
+        void tilesHandler(req, res);
       });
     },
   };

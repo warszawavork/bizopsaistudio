@@ -370,6 +370,14 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-50 border border-emerald-200/80 px-3 py-1.5 text-xs font-semibold text-emerald-800 shadow-2xs">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <span>Neon Postgres (Chmura na żywo)</span>
+          </div>
+
           <button
             type="button"
             disabled={checkingConsistency || activeTiles.length === 0}
