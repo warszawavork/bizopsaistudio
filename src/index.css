@@ -1,0 +1,167 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.012em;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+/* Soft, relaxing custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.55);
+}
+
+/* SaaS Premium multi-layered card elevation */
+.soft-card {
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 10px 30px -10px rgba(15, 23, 42, 0.07),
+    0 0 0 1px rgba(15, 23, 42, 0.02);
+}
+
+/* Subtle architectural grid + aurora ambient glow */
+.saas-ambient {
+  background-color: #f4f7fc;
+  background-image:
+    radial-gradient(ellipse 85% 50% at 50% -15%, rgba(99, 102, 241, 0.16), transparent 70%),
+    radial-gradient(ellipse 55% 40% at 95% 0%, rgba(16, 185, 129, 0.10), transparent 65%),
+    radial-gradient(ellipse 50% 35% at 5% 8%, rgba(168, 85, 247, 0.09), transparent 65%),
+    linear-gradient(to right, rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 36px 36px, 36px 36px;
+}
+
+.theme-warm {
+  background-color: #f6f0e6;
+  background-image:
+    radial-gradient(ellipse 80% 45% at 50% -15%, rgba(217, 119, 6, 0.11), transparent 70%),
+    radial-gradient(ellipse 50% 35% at 92% 0%, rgba(16, 185, 129, 0.07), transparent 65%);
+}
+
+/* SaaS Pro Dark Mode (Obsidian + Indigo + Violet + Emerald) */
+.theme-dark {
+  background-color: #090d16;
+  color: #e2e8f0;
+  background-image:
+    radial-gradient(ellipse 80% 45% at 50% -15%, rgba(99, 102, 241, 0.24), transparent 70%),
+    radial-gradient(ellipse 50% 35% at 92% 0%, rgba(16, 185, 129, 0.12), transparent 65%),
+    radial-gradient(ellipse 45% 30% at 8% 10%, rgba(168, 85, 247, 0.14), transparent 65%),
+    linear-gradient(to right, rgba(148, 163, 184, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.03) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 36px 36px, 36px 36px;
+}
+
+.theme-dark header {
+  background-color: rgba(15, 23, 42, 0.82) !important;
+  border-color: rgba(51, 65, 85, 0.7) !important;
+}
+
+.theme-dark .soft-card,
+.theme-dark .bg-white,
+.theme-dark .bg-white\/95,
+.theme-dark .bg-white\/90,
+.theme-dark .bg-white\/80,
+.theme-dark .bg-white\/65 {
+  background-color: #111827 !important;
+  border-color: rgba(51, 65, 85, 0.85) !important;
+  color: #e2e8f0;
+}
+
+.theme-dark .bg-slate-50,
+.theme-dark .bg-slate-50\/70,
+.theme-dark .bg-slate-50\/80,
+.theme-dark .bg-slate-50\/90,
+.theme-dark .bg-slate-100,
+.theme-dark .bg-slate-100\/80 {
+  background-color: #1e293b !important;
+  border-color: rgba(71, 85, 105, 0.6) !important;
+}
+
+.theme-dark .text-slate-900,
+.theme-dark .text-slate-800 {
+  color: #f8fafc !important;
+}
+
+.theme-dark .text-slate-700,
+.theme-dark .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+.theme-dark .text-slate-500,
+.theme-dark .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+.theme-dark input,
+.theme-dark textarea,
+.theme-dark select {
+  background-color: #0f172a !important;
+  color: #f1f5f9 !important;
+  border-color: #334155 !important;
+}
+
+.theme-dark .border-slate-200,
+.theme-dark .border-slate-200\/80,
+.theme-dark .border-slate-200\/70,
+.theme-dark .border-slate-100 {
+  border-color: rgba(51, 65, 85, 0.8) !important;
+}
+
+@keyframes enterSlideUp {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-enter {
+  animation: enterSlideUp 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes shimmerSweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+.shimmer-bar {
+  position: relative;
+  overflow: hidden;
+}
+
+.shimmer-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 50%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: shimmerSweep 1.6s infinite;
+}

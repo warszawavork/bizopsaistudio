@@ -1,0 +1,17 @@
+{
+  "name": "BizOps AI Studio",
+  "short_name": "BizOps AI",
+  "description": "Asystent Odpowiedzi AI, Czytnik Dokumentów i Baza Wiedzy Firmy",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/app-icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

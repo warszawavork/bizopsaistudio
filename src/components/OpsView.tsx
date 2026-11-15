@@ -1,0 +1,315 @@
+import React, { useState } from 'react';
+import {
+  Activity,
+  CheckCircle2,
+  Clock,
+  Coins,
+  Cpu,
+  Download,
+  Loader2,
+  Send,
+  Trash2,
+  Webhook,
+  XCircle,
+} from 'lucide-react';
+import type { AiOpsLogEntry, WebhookConfig, WebhookSendResult } from '../types';
+
+interface OpsViewProps {
+  logs: AiOpsLogEntry[];
+  onClearLogs: () => void;
+  webhookConfig: WebhookConfig;
+  onWebhookConfigChange: (cfg: WebhookConfig) => void;
+  lastWebhookResult: { payload: Record<string, unknown>; result: WebhookSendResult } | null;
+  onTestWebhook: () => Promise<void>;
+}
+
+export const OpsView: React.FC<OpsViewProps> = ({
+  logs,
+  onClearLogs,
+  webhookConfig,
+  onWebhookConfigChange,
+  lastWebhookResult,
+  onTestWebhook,
+}) => {
+  const [testingWebhook, setTestingWebhook] = useState(false);
+
+  const successLogs = logs.filter((l) => l.status === 'success' && l.latencyMs > 0);
+  const avgLatency =
+    successLogs.length > 0
+      ? Math.round(successLogs.reduce((acc, l) => acc + l.latencyMs, 0) / successLogs.length)
+      : 0;
+  const totalTokens = logs.reduce((acc, l) => acc + l.totalTokens, 0);
+
+  const handleTest = async () => {
+    setTestingWebhook(true);
+    await onTestWebhook();
+    setTestingWebhook(false);
+  };
+
+  const handleDownloadBlueprint = () => {
+    const blueprint = {
+      name: 'BizOps AI Studio — Make/n8n Automation Blueprint',
+      author: 'Bogdan Liaskevich',
+      nodes: [
+        {
+          id: 'webhook_trigger',
+          type: 'n8n-nodes-base.webhook',
+          name: '1. Odbiór Payloadu z BizOps AI Studio',
+          parameters: { httpMethod: 'POST', path: 'bizops-ai-audit' },
+        },
+        {
+          id: 'risk_router',
+          type: 'n8n-nodes-base.if',
+          name: '2. Router Ryzyka (HIGH vs LOW/MEDIUM)',
+          parameters: { condition: '{{$json.riskLevel}} === "HIGH"' },
+        },
+        {
+          id: 'telegram_alert',
+          type: 'n8n-nodes-base.telegram',
+          name: '3A. Alert Krytyczny na Telegram Zespołu',
+          parameters: { text: '🚨 HIGH RISK Audit: {{$json.clientOrSender}} ({{$json.score}}%)' },
+        },
+        {
+          id: 'crm_sheets',
+          type: 'n8n-nodes-base.googleSheets',
+          name: '3B. Zapis do Rejestru Google Sheets / Pipedrive',
+          parameters: { operation: 'append' },
+        },
+      ],
+    };
+    const blob = new Blob([JSON.stringify(blueprint, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'BizOps_AI_Make_n8n_Blueprint.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* KPI Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+            <span>Wywołania AI & Automatyzacji</span>
+            <Activity className="h-4 w-4 text-indigo-600" />
+          </div>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{logs.length}</p>
+          <p className="mt-1 text-[11px] text-emerald-600 font-medium">
+            {logs.filter((l) => l.status === 'success').length} zakończonych sukcesem
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+            <span>Średni czas odpowiedzi</span>
+            <Clock className="h-4 w-4 text-sky-600" />
+          </div>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{avgLatency} ms</p>
+          <p className="mt-1 text-[11px] text-slate-500">Silnik: Gemini 3.8 Flash</p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+            <span>Zużycie tokenów (sesja)</span>
+            <Cpu className="h-4 w-4 text-amber-600" />
+          </div>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{totalTokens.toLocaleString('pl-PL')}</p>
+          <p className="mt-1 text-[11px] text-slate-500">Okno modelu: 1 000 000 tok.</p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+            <span>Szacowany koszt (Free Tier)</span>
+            <Coins className="h-4 w-4 text-emerald-600" />
+          </div>
+          <p className="mt-2 text-2xl font-bold text-emerald-700">$0.00</p>
+          <p className="mt-1 text-[11px] text-slate-500">Darmowy plan Google AI Studio</p>
+        </div>
+      </div>
+
+      {/* Make / n8n Webhook Bridge Configurator */}
+      <div className="grid gap-5 lg:grid-cols-12">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs lg:col-span-6 space-y-4">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+              <Webhook className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Mostek Webhook: Make.com / n8n</h3>
+              <p className="text-xs text-slate-500">
+                Wysyła ustrukturyzowany JSON z audytów i czatu prosto do Twoich scenariuszy automatyzacji.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+              Adres URL Webhooka (Make / n8n / Zapier)
+            </label>
+            <input
+              type="url"
+              value={webhookConfig.url}
+              onChange={(e) => onWebhookConfigChange({ ...webhookConfig, url: e.target.value })}
+              placeholder="https://hook.eu1.make.com/twoj-unikalny-kod-webhooka"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
+            />
+          </div>
+
+          <div className="space-y-2.5">
+            <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={webhookConfig.simulateWhenEmpty}
+                onChange={(e) =>
+                  onWebhookConfigChange({ ...webhookConfig, simulateWhenEmpty: e.target.checked })
+                }
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              <span>Tryb demonstracyjny (symuluj odpowiedź HTTP 200 gdy pole URL jest puste)</span>
+            </label>
+
+            <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={webhookConfig.autoSendOnHighRisk}
+                onChange={(e) =>
+                  onWebhookConfigChange({ ...webhookConfig, autoSendOnHighRisk: e.target.checked })
+                }
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              <span>Automatycznie wysyłaj alert JSON przy audycie o wysokim ryzyku (HIGH RISK)</span>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={testingWebhook}
+              onClick={() => void handleTest()}
+              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {testingWebhook ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              Testuj Webhook (Wyślij Ping JSON)
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadBlueprint}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <Download className="h-3.5 w-3.5 text-indigo-600" />
+              Pobierz Blueprint n8n / Make (.json)
+            </button>
+          </div>
+        </div>
+
+        {/* Last Webhook Payload Inspector */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs lg:col-span-6 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-slate-900">Inspektor ostatniej wysyłki Webhook</h3>
+            {lastWebhookResult && (
+              <span
+                className={`rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                  lastWebhookResult.result.ok
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-rose-100 text-rose-800'
+                }`}
+              >
+                HTTP {lastWebhookResult.result.status}{' '}
+                {lastWebhookResult.result.simulated ? '(Symulacja)' : '(Live)'} •{' '}
+                {lastWebhookResult.result.latencyMs} ms
+              </span>
+            )}
+          </div>
+
+          {!lastWebhookResult ? (
+            <div className="flex h-44 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/70 p-4 text-center text-xs text-slate-500">
+              Kliknij „Testuj Webhook” lub wyślij wynik z Audytora / Czatu, aby zobaczyć wysłany JSON i odpowiedź serwera Make/n8n.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[11px] text-slate-600">
+                <strong>Odpowiedź:</strong> {lastWebhookResult.result.responseText}
+              </p>
+              <pre className="max-h-44 overflow-auto rounded-xl bg-slate-900 p-3 text-[11px] font-mono text-sky-300">
+                {JSON.stringify(lastWebhookResult.payload, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Telemetry & Audit Log Table */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Log Audytu AI & Telemetria (Audit Trail)</h3>
+            <p className="text-xs text-slate-500">Pełna historia wywołań modelu Gemini oraz webhooków</p>
+          </div>
+          {logs.length > 0 && (
+            <button
+              type="button"
+              onClick={onClearLogs}
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-rose-50 hover:text-rose-700"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Wyczyść logi
+            </button>
+          )}
+        </div>
+
+        {logs.length === 0 ? (
+          <p className="py-8 text-center text-xs text-slate-400">
+            Brak zarejestrowanych operacji w tej sesji. Zadaj pytanie botowi lub uruchom audyt dokumentu.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 text-[11px] uppercase tracking-wider text-slate-400">
+                  <th className="py-2 pr-3">Czas</th>
+                  <th className="py-2 pr-3">Moduł</th>
+                  <th className="py-2 pr-3">Preset</th>
+                  <th className="py-2 pr-3">Opis zdarzenia</th>
+                  <th className="py-2 pr-3">Opóźnienie</th>
+                  <th className="py-2 pr-3">Tokeny</th>
+                  <th className="py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {logs.map((log) => (
+                  <tr key={log.id} className="hover:bg-slate-50/70">
+                    <td className="py-2.5 pr-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                      {new Date(log.timestamp).toLocaleTimeString('pl-PL')}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-700">
+                        {log.action}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-3 text-slate-600 whitespace-nowrap">{log.presetName}</td>
+                    <td className="py-2.5 pr-3 text-slate-800 max-w-xs truncate">{log.summary}</td>
+                    <td className="py-2.5 pr-3 font-mono text-[11px] text-slate-500">{log.latencyMs} ms</td>
+                    <td className="py-2.5 pr-3 font-mono text-[11px] text-slate-500">{log.totalTokens}</td>
+                    <td className="py-2.5">
+                      {log.status === 'success' ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-600 font-semibold">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> OK
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-rose-600 font-semibold">
+                          <XCircle className="h-3.5 w-3.5" /> Błąd
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
