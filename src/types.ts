@@ -187,6 +187,8 @@ export interface ChatMessage {
   timestamp: string;
   perspective: ChatPerspective;
   citedTileIds?: string[];
+  webSources?: WebSource[];
+  webFactsUsed?: string[];
   confidence?: 'high' | 'medium' | 'low';
   suggestedFollowUps?: string[];
   latencyMs?: number;

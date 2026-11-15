@@ -149,11 +149,14 @@ export async function sendChatQuery(params: {
   companyIndustry: string;
   perspective: ChatPerspective;
   language?: AppLanguage;
+  useWebSearch?: boolean;
   knowledgeTiles: KnowledgeTile[];
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
 }): Promise<{
   answer: string;
   citedTileIds: string[];
+  webSources?: Array<{ title: string; uri: string }>;
+  webFactsUsed?: string[];
   confidence: 'high' | 'medium' | 'low';
   suggestedFollowUps: string[];
   mascotMood: 'happy' | 'thinking' | 'alert' | 'curious';

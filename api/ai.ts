@@ -291,24 +291,40 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const companyName = String(body.companyName || 'Firma');
       const companyIndustry = String(body.companyIndustry || 'Operacje B2B');
       const perspective = body.perspective === 'internal' ? 'internal' : 'client';
+      const useWebSearch = body.useWebSearch !== false;
       const tiles = (Array.isArray(body.knowledgeTiles) ? body.knowledgeTiles : []) as KnowledgeTileInput[];
       const messages = (Array.isArray(body.messages) ? body.messages : []) as ChatMessageInput[];
 
       const knowledgeContext = formatKnowledgeContext(tiles, perspective);
+      const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
+
+      const liveWeb =
+        useWebSearch && lastUserMessage
+          ? await fetchLiveWebContext(apiKey, companyIndustry, lastUserMessage)
+          : { summary: '', sources: [] };
 
       const systemText = [
-        `Jesteś oficjalnym Asystentem AI firmy "${companyName}" (branża: ${companyIndustry}).`,
+        `Jesteś oficjalnym Ekspertem i Asystentem AI firmy "${companyName}" (branża: ${companyIndustry}).`,
         perspective === 'internal'
-          ? 'TRYB PRACY: WEWNĘTRZNY (Dla Pracownika / Handlowca / Managera). Masz dostęp do pełnej bazy wraz z notatkami wewnętrznymi, marżami, ryzykami operacyjnymi i checklistami.'
-          : 'TRYB PRACY: KLIENT ZEWNĘTRZNY. Odpowiadaj uprzejmie, profesjonalnie i sprzedażowo. Opieraj się wyłącznie na publicznej bazie wiedzy. Nie ujawniaj wewnętrznych marż ani poufnych procedur.',
+          ? 'TRYB PRACY: WEWNĘTRZNY (Dla Pracownika / Handlowca / Managera). Masz dostęp do pełnej bazy wraz z notatkami wewnętrznymi, marżami, ryzykami operacyjnymi i checklistami oraz do aktualnej wiedzy z Internetu (Google Search).'
+          : 'TRYB PRACY: KLIENT ZEWNĘTRZNY. Odpowiadaj uprzejmie, profesjonalnie i sprzedażowo. Opieraj się na publicznej bazie wiedzy firmy oraz aktualnej wiedzy rynkowej z Internetu. Nie ujawniaj wewnętrznych marż ani poufnych procedur.',
         langInstruction,
-        'ZASADY:',
-        '1. Bazuj przede wszystkim na poniższej Bazie Wiedzy Firmy. Jeśli czegoś nie ma w bazie, jasno zaznacz, że ta informacja wymaga doprecyzowania lub dodania w module "Naucz mnie".',
-        '2. W polu citedTileIds podaj dokładne wartości TILE_ID dokumentów, z których skorzystałeś.',
-        '3. Twoim towarzyszem w aplikacji jest profesjonalny Kotek Inżynier AI ("Mruczek BizOps") — wygeneruj krótki, sympatyczny komentarz mascotTip (max 12 słów) i dopasuj mascotMood.',
+        'ZASADY GŁĘBOKIEJ SYNTEZY (BAZA WIEDZY + INTERNET):',
+        '1. Łącz fakty z wewnętrznej Bazy Wiedzy Firmy z aktualnymi informacjami z Internetu (przepisy prawne, VAT, prawo budowlane, normy techniczne, logistyka, ceny rynkowe, geografia).',
+        '2. W sprawach dotyczących oferty naszej firmy (ceny, modele, gwarancja, rabaty) zawsze priorytet ma Baza Wiedzy Firmy. Gdy pytanie wykracza poza bazę firmy lub wymaga kontekstu rynkowego/prawnego, wykorzystaj sekcję WIEDZA Z INTERNETU.',
+        '3. W polu citedTileIds podaj dokładne wartości TILE_ID kafelków z bazy, z których skorzystałeś.',
+        '4. W polu webFactsUsed wypisz krótko (1-3 punkty) fakty lub przepisy zaczerpnięte z Internetu (lub pustą tablicę, jeśli nie były potrzebne).',
+        '5. Twoim towarzyszem w aplikacji jest profesjonalny Kotek Inżynier AI ("Mruczek BizOps") — wygeneruj krótki komentarz mascotTip (max 12 słów) i dopasuj mascotMood.',
         '',
         '=== BAZA WIEDZY FIRMY ===',
         knowledgeContext,
+        ...(liveWeb.summary
+          ? [
+              '',
+              '=== AKTUALNA WIEDZA Z INTERNETU (GOOGLE SEARCH LIVE) ===',
+              liveWeb.summary,
+            ]
+          : []),
       ].join('\n');
 
       const geminiContents = messages.slice(-12).map((m) => ({
@@ -327,12 +343,21 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
             properties: {
               answer: { type: 'STRING' },
               citedTileIds: { type: 'ARRAY', items: { type: 'STRING' } },
+              webFactsUsed: { type: 'ARRAY', items: { type: 'STRING' } },
               confidence: { type: 'STRING', enum: ['high', 'medium', 'low'] },
               suggestedFollowUps: { type: 'ARRAY', items: { type: 'STRING' } },
               mascotMood: { type: 'STRING', enum: ['happy', 'thinking', 'alert', 'curious'] },
               mascotTip: { type: 'STRING' },
             },
-            required: ['answer', 'citedTileIds', 'confidence', 'suggestedFollowUps', 'mascotMood', 'mascotTip'],
+            required: [
+              'answer',
+              'citedTileIds',
+              'webFactsUsed',
+              'confidence',
+              'suggestedFollowUps',
+              'mascotMood',
+              'mascotTip',
+            ],
           },
         },
       });
@@ -340,6 +365,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const parsed = parseGeminiJson<Record<string, unknown>>(result.text);
       sendJson(res, 200, {
         ...parsed,
+        webSources: liveWeb.sources,
         model: result.model || GEMINI_MODEL,
         keySource: source,
         usage: result.usage,

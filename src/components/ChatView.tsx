@@ -7,7 +7,10 @@ import {
   Check,
   Copy,
   Download,
+  ExternalLink,
+  Globe,
   Loader2,
+  PlusCircle,
   Send,
   Sparkles,
   Trash2,
@@ -16,7 +19,14 @@ import {
   Webhook,
   Zap,
 } from 'lucide-react';
-import type { AppLanguage, ChatMessage, ChatPerspective, IndustryPreset, KnowledgeTile, MascotMood } from '../types';
+import type {
+  AppLanguage,
+  ChatMessage,
+  ChatPerspective,
+  IndustryPreset,
+  KnowledgeTile,
+  MascotMood,
+} from '../types';
 import { sendChatQuery } from '../utils/apiClient';
 
 interface ChatViewProps {
@@ -42,6 +52,7 @@ interface ChatViewProps {
   onSendWebhookPayload: (payload: Record<string, unknown>, label: string) => Promise<void>;
   onOpenKnowledge: () => void;
   onHandoffToResponder?: (text: string) => void;
+  onAddKnowledgeTile?: (tile: KnowledgeTile) => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -59,11 +70,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onSendWebhookPayload,
   onOpenKnowledge,
   onHandoffToResponder,
+  onAddKnowledgeTile,
 }) => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [useWebSearch, setUseWebSearch] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [savedTileMsgId, setSavedTileMsgId] = useState<string | null>(null);
   const [webhookSendingId, setWebhookSendingId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -92,7 +106,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (!overrideText) setInput('');
     setLoading(true);
     setError(null);
-    onMascotUpdate('thinking', 'Przeszukuję bazę wiedzy firmy...');
+    onMascotUpdate(
+      'thinking',
+      useWebSearch
+        ? 'Przeszukuję Bazę Wiedzy firmy oraz aktualny Internet (Google)...'
+        : 'Przeszukuję Bazę Wiedzy firmy...'
+    );
 
     try {
       const res = await sendChatQuery({
@@ -100,6 +119,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         companyIndustry: preset.industry,
         perspective,
         language,
+        useWebSearch,
         knowledgeTiles: tiles,
         messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
       });
@@ -111,6 +131,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         timestamp: new Date().toISOString(),
         perspective,
         citedTileIds: res.citedTileIds,
+        webSources: res.webSources,
+        webFactsUsed: res.webFactsUsed,
         confidence: res.confidence,
         suggestedFollowUps: res.suggestedFollowUps,
         latencyMs: res.latencyMs,
@@ -118,7 +140,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       };
 
       onMessagesChange([...nextMessages, assistantMsg]);
-      onMascotUpdate(res.mascotMood || 'happy', res.mascotTip || 'Gotowe! Sprawdź zacytowane źródła.');
+      onMascotUpdate(
+        res.mascotMood || 'happy',
+        res.mascotTip || 'Gotowe! Połączono wiedzę firmy i internet.'
+      );
       onLogAiCall({
         action: 'chat',
         latencyMs: res.latencyMs,
@@ -126,7 +151,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         candidatesTokens: res.usage.candidatesTokens,
         totalTokens: res.usage.totalTokens,
         status: 'success',
-        summary: `Czat (${perspective === 'internal' ? 'Wewnętrzny' : 'Klient'}): "${query.slice(0, 48)}"`,
+        summary: `Czat (${useWebSearch ? 'Baza+Internet' : 'Baza'}): "${query.slice(0, 44)}"`,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Błąd zapytania do AI';
@@ -161,6 +186,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
     window.setTimeout(() => setCopiedId(null), 1600);
   };
 
+  const handleSaveAsKnowledgeTile = (msg: ChatMessage, msgIndex: number) => {
+    if (!onAddKnowledgeTile) return;
+    const prevUserQuestion =
+      msgIndex > 0 && messages[msgIndex - 1]?.role === 'user'
+        ? messages[msgIndex - 1].content
+        : 'Synteza wiedzy z Czatu AI';
+
+    const newTile: KnowledgeTile = {
+      id: `tile_chat_${Date.now()}`,
+      title: prevUserQuestion.slice(0, 65),
+      category: 'Wiedza + Internet',
+      visibility: msg.perspective === 'internal' ? 'internal' : 'public',
+      priority: 'standard',
+      content: msg.content,
+      enabled: true,
+      updatedAt: new Date().toISOString().slice(0, 10),
+    };
+
+    onAddKnowledgeTile(newTile);
+    setSavedTileMsgId(msg.id);
+    window.setTimeout(() => setSavedTileMsgId(null), 2500);
+  };
+
   const handleSendToWebhook = async (msg: ChatMessage) => {
     setWebhookSendingId(msg.id);
     await onSendWebhookPayload(
@@ -170,6 +218,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         perspective: msg.perspective,
         confidence: msg.confidence,
         citedTileIds: msg.citedTileIds || [],
+        webSources: msg.webSources || [],
         answer: msg.content,
         timestamp: msg.timestamp,
       },
@@ -184,7 +233,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const handleExportMarkdown = () => {
     if (messages.length === 0) return;
     const lines = [
-      `# Czat z Wiedzą — ${preset.name}`,
+      `# Czat z Wiedzą + Internet — ${preset.name}`,
       `Data eksportu: ${new Date().toLocaleString('pl-PL')}`,
       `Tryb: ${perspective === 'internal' ? 'Wewnętrzny (Zespół)' : 'Klienta (Oficjalny)'}`,
       '',
@@ -207,7 +256,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     <div className="flex flex-col gap-4">
       {/* Top Controls Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex rounded-xl bg-slate-100 p-1">
             <button
               type="button"
@@ -234,13 +283,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
               Tryb Wewnętrzny (Zespół / Marże)
             </button>
           </div>
+
+          {/* Przełącznik Głębokiej Integracji z Internetem (Google Search Grounding) */}
+          <button
+            type="button"
+            onClick={() => setUseWebSearch((v) => !v)}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
+              useWebSearch
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800 shadow-2xs'
+                : 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100'
+            }`}
+            title="Gdy włączone, AI łączy wewnętrzną Bazę Wiedzy firmy z aktualnymi informacjami z Internetu (Google Search Live)"
+          >
+            <Globe className={`h-3.5 w-3.5 ${useWebSearch ? 'text-emerald-600 animate-pulse' : 'text-slate-400'}`} />
+            <span>Wiedza + Internet Live:</span>
+            <span
+              className={`rounded-md px-1.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                useWebSearch ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'
+              }`}
+            >
+              {useWebSearch ? 'AKTYWNE' : 'WYŁ.'}
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={onOpenKnowledge}
-            className="hidden items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-700 sm:inline-flex"
+            className="hidden items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-700 md:inline-flex"
           >
             <BookOpen className="h-3.5 w-3.5 text-indigo-600" />
-            Aktywne kafelki wiedzy: <strong className="text-slate-900">{visibleTilesCount}</strong>
+            Kafelki w bazie: <strong className="text-slate-900">{visibleTilesCount}</strong>
           </button>
         </div>
 
@@ -275,12 +347,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <Sparkles className="h-6 w-6" />
               </div>
               <h3 className="text-base font-bold text-slate-900">
-                Ekspert AI: {preset.name}
+                Ekspert AI: {preset.name} {useWebSearch && ' + 🌐 Internet Live'}
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-slate-500">
                 {perspective === 'internal'
-                  ? 'Pracujesz w trybie wewnętrznym: asystent korzysta ze wszystkich kafelków wiedzy, w tym poufnych marż, limitów rabatowych i ryzyk operacyjnych.'
-                  : 'Pracujesz w trybie klienta: asystent odpowiada uprzejmie i sprzedażowo wyłącznie na podstawie publicznej bazy wiedzy.'}
+                  ? 'Tryb wewnętrzny z integracją Google Search: asystent łączy wszystkie Twoje kafelki wiedzy (cenniki, marże, procedury) z aktualnymi przepisami, cenami rynkowymi i wiedzą z Internetu.'
+                  : 'Tryb klienta z integracją Google Search: asystent odpowiada uprzejmie i ekspercko, łącząc oficjalną ofertę firmy z aktualnymi faktami rynkowymi i technicznymi z sieci.'}
               </p>
 
               <div className="mt-6 grid w-full gap-2 sm:grid-cols-2">
@@ -298,7 +370,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
             </div>
           ) : (
-            messages.map((msg) => (
+            messages.map((msg, msgIndex) => (
               <div
                 key={msg.id}
                 className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -320,10 +392,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                   {msg.role === 'assistant' && (
                     <div className="mt-3 space-y-2.5 border-t border-slate-200/80 pt-2.5">
-                      {/* Source Grounding Citations */}
+                      {/* 1. Source Grounding Citations from Company Knowledge Base */}
                       {msg.citedTileIds && msg.citedTileIds.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-[11px] font-semibold text-slate-500">Źródła z bazy:</span>
+                          <span className="text-[11px] font-semibold text-slate-500">
+                            Źródła z Bazy Wiedzy:
+                          </span>
                           {msg.citedTileIds.map((id) => {
                             const tile = tileMap.get(id);
                             return (
@@ -341,6 +415,42 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         </div>
                       )}
 
+                      {/* 2. Synthesized Facts & Live Sources from the Internet (Google Search) */}
+                      {((msg.webFactsUsed && msg.webFactsUsed.length > 0) ||
+                        (msg.webSources && msg.webSources.length > 0)) && (
+                        <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/60 p-2.5 space-y-1.5">
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-900">
+                            <Globe className="h-3.5 w-3.5 text-emerald-600" />
+                            Wiedza uzupełniona z Internetu (Google Search Live):
+                          </div>
+
+                          {msg.webFactsUsed && msg.webFactsUsed.length > 0 && (
+                            <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-emerald-800">
+                              {msg.webFactsUsed.map((fact, idx) => (
+                                <li key={idx}>{fact}</li>
+                              ))}
+                            </ul>
+                          )}
+
+                          {msg.webSources && msg.webSources.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                              {msg.webSources.map((src, idx) => (
+                                <a
+                                  key={idx}
+                                  href={src.uri}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100 transition"
+                                >
+                                  <ExternalLink className="h-2.5 w-2.5" />
+                                  <span className="truncate max-w-[180px]">{src.title}</span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {/* Meta & Actions Row */}
                       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
                         <div className="flex items-center gap-2">
@@ -354,7 +464,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                     : 'bg-rose-100 text-rose-700'
                               }`}
                             >
-                              Pewność: {msg.confidence === 'high' ? 'Wysoka' : msg.confidence === 'medium' ? 'Średnia' : 'Niska'}
+                              Pewność:{' '}
+                              {msg.confidence === 'high'
+                                ? 'Wysoka'
+                                : msg.confidence === 'medium'
+                                  ? 'Średnia'
+                                  : 'Niska'}
                             </span>
                           )}
                           {msg.latencyMs !== undefined && (
@@ -370,9 +485,35 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             onClick={() => handleCopy(msg.id, msg.content)}
                             className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
                           >
-                            {copiedId === msg.id ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                            {copiedId === msg.id ? (
+                              <Check className="h-3 w-3 text-emerald-600" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
                             {copiedId === msg.id ? 'Skopiowano' : 'Kopiuj'}
                           </button>
+
+                          {onAddKnowledgeTile && (
+                            <button
+                              type="button"
+                              onClick={() => handleSaveAsKnowledgeTile(msg, msgIndex)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 transition"
+                              title="Zapisz tę odpowiedź jako nowy kafelek w Bazie Wiedzy (synchronizacja z chmurą Neon)"
+                            >
+                              {savedTileMsgId === msg.id ? (
+                                <>
+                                  <Check className="h-3 w-3 text-emerald-600" />
+                                  Zapisano w Bazie!
+                                </>
+                              ) : (
+                                <>
+                                  <PlusCircle className="h-3 w-3 text-emerald-600" />
+                                  Zapisz do Bazy Wiedzy
+                                </>
+                              )}
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             disabled={webhookSendingId === msg.id}
@@ -433,7 +574,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <Loader2 className="h-4 w-4 animate-spin" />
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-medium text-slate-500">
-                Gemini 3.8 Flash analizuje bazę wiedzy ({visibleTilesCount} kafelków)...
+                {useWebSearch
+                  ? `Gemini 3.8 Flash łączy Bazę Wiedzy (${visibleTilesCount} kafelków) oraz przeszukuje Internet (Google Live)...`
+                  : `Gemini 3.8 Flash analizuje Bazę Wiedzy (${visibleTilesCount} kafelków)...`}
               </div>
             </div>
           )}
@@ -460,8 +603,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
             onChange={(e) => setInput(e.target.value)}
             placeholder={
               perspective === 'internal'
-                ? 'Zapytaj o marże, ryzyka operacyjne, stawki VAT lub procedury...'
-                : 'Zadaj pytanie jako klient o ofertę, standard, czas realizacji...'
+                ? 'Zapytaj o marże, cenniki, prawo budowlane, stawki VAT lub dane rynkowe z sieci...'
+                : 'Zadaj pytanie o ofertę, technologie, przepisy lub warunki realizacji...'
             }
             className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500"
           />

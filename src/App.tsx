@@ -744,6 +744,9 @@ export function App() {
               setActiveTab('responder');
               showToast('Przekazano odpowiedź z Czatu do Asystenta Odpowiedzi');
             }}
+            onAddKnowledgeTile={(newTile) => {
+              void handleTilesChangeWithCloud([newTile, ...currentTiles]);
+            }}
           />
         )}
         </div>
