@@ -37,6 +37,8 @@ import { SettingsModal } from './components/SettingsModal';
 import { CustomProfileModal } from './components/CustomProfileModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
 import { ToastNotification, type ToastItem } from './components/ToastNotification';
+import { WelcomeModal, type UserProfile } from './components/WelcomeModal';
+import { GeminiQuotaWidget } from './components/GeminiQuotaWidget';
 
 const STORAGE_TILES_PREFIX = 'bizops_tiles_v2_';
 const STORAGE_DEALS_PREFIX = 'bizops_deals_v2_';
@@ -152,6 +154,17 @@ export function App() {
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
   const [floatingToasts, setFloatingToasts] = useState<ToastItem[]>([]);
   const [cloudSyncStatus, setCloudSyncStatus] = useState<'connected' | 'syncing' | 'error'>('connected');
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
+    try {
+      const raw = localStorage.getItem('bizops_user_profile');
+      return raw ? (JSON.parse(raw) as UserProfile) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [welcomeModalOpen, setWelcomeModalOpen] = useState(() => {
+    return !localStorage.getItem('bizops_user_profile');
+  });
 
   const addFloatingToast = (item: Omit<ToastItem, 'id' | 'timestamp'>) => {
     const newToast: ToastItem = {
@@ -254,12 +267,16 @@ export function App() {
 
   const handleTilesChangeWithCloud = async (next: KnowledgeTile[]) => {
     setTilesByPreset((prev) => ({ ...prev, [preset.id]: next }));
+    const author = userProfile?.name
+      ? `${userProfile.name} (${userProfile.role.split('/')[0].trim()})`
+      : 'Użytkownik';
     try {
-      await saveBatchCloudTiles(next, preset.id, 'Użytkownik');
+      await saveBatchCloudTiles(next, preset.id, author);
       addFloatingToast({
         type: 'created',
         title: 'Zapisano w chmurze',
         message: 'Kafelek zsynchronizowany ze wszystkimi użytkownikami',
+        authorName: author,
       });
     } catch (err) {
       console.error('Błąd zapisu kafelka do chmury:', err);
@@ -475,6 +492,18 @@ export function App() {
               </span>
               <span className="hidden sm:inline">Neon Sync</span>
             </div>
+
+            <GeminiQuotaWidget logs={logs} />
+
+            <button
+              type="button"
+              onClick={() => setWelcomeModalOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 shadow-2xs hover:border-cyan-400 hover:text-cyan-700 transition"
+              title="Profil użytkownika (Kliknij, aby zmienić imię lub rolę)"
+            >
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+              <span>Cześć, {userProfile?.name || 'Zaloguj się'}!</span>
+            </button>
 
             <button
               type="button"
@@ -783,6 +812,24 @@ export function App() {
 
       {/* Floating Realtime Cloud Toasts */}
       <ToastNotification toasts={floatingToasts} onDismiss={dismissFloatingToast} />
+
+      {/* Onboarding & User Identity Modal */}
+      <WelcomeModal
+        open={welcomeModalOpen}
+        currentProfile={userProfile}
+        onClose={userProfile ? () => setWelcomeModalOpen(false) : undefined}
+        onSave={(prof) => {
+          localStorage.setItem('bizops_user_profile', JSON.stringify(prof));
+          setUserProfile(prof);
+          setWelcomeModalOpen(false);
+          showToast(`Zalogowano jako: ${prof.name}`);
+          addFloatingToast({
+            type: 'info',
+            title: 'Witaj w BizOps AI Studio',
+            message: `Aktywny profil: ${prof.name} (${prof.role})`,
+          });
+        }}
+      />
     </div>
   );
 }
