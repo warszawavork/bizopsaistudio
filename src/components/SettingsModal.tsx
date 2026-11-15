@@ -333,7 +333,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 <div className="h-3 w-full rounded-full bg-slate-100 overflow-hidden border border-slate-200/60">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-indigo-600 to-cyan-500 transition-all duration-500"
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      dbPercent >= 80
+                        ? 'bg-gradient-to-r from-amber-500 to-rose-500'
+                        : 'bg-gradient-to-r from-indigo-600 to-cyan-500'
+                    }`}
                     style={{ width: `${Math.max(2, dbPercent)}%` }}
                   />
                 </div>
@@ -360,10 +364,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-[11px] text-slate-600">
-                  <span>
-                    💡 Wolne <strong>{dbRemainingMb} MB</strong> wystarczy na ok.{' '}
-                    <strong>450 000 kafelków wiedzy</strong>.
-                  </span>
+                  <div className="space-y-0.5">
+                    <span className="block">
+                      💡 Wolne <strong>{dbRemainingMb} MB</strong> wystarczy na ok.{' '}
+                      <strong>450 000 kafelków wiedzy</strong>.
+                    </span>
+                    <span className="block text-[10px] text-emerald-700 font-semibold">
+                      🛡️ Auto-Retencja: logi starsze niż 30 dni lub przy &ge;80% limitu (410 MB) czyszczą się automatycznie.
+                    </span>
+                  </div>
                   <button
                     type="button"
                     disabled={clearingLogs}

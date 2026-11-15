@@ -6,6 +6,7 @@ import {
   Clock,
   Copy,
   ExternalLink,
+  FileText,
   Flame,
   Globe,
   HelpCircle,
@@ -20,6 +21,7 @@ import {
   Mic,
   MicOff,
   Plus,
+  Printer,
   RotateCcw,
   ShieldAlert,
   Sparkles,
@@ -34,6 +36,7 @@ import type {
   ObjectionPlaybookItem,
   QuickLinkItem,
   SalesReplyResult,
+  WebSource,
 } from '../types';
 import {
   generateSalesReply,
@@ -42,6 +45,9 @@ import {
   sendGmailBridge,
   sendWhatsAppMessage,
 } from '../utils/apiClient';
+import { copyRichEmailToClipboard } from '../utils/emailExport';
+import { exportSalesReplyToPdf, printCleanReportHtml } from '../utils/pdfExport';
+import { WebSourcesPanel } from './WebSourcesPanel';
 
 interface SalesResponderViewProps {
   preset: IndustryPreset;
@@ -223,7 +229,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   const [editableSubject, setEditableSubject] = useState<string>('');
   const [editableBody, setEditableBody] = useState<string>('');
-  const [copiedMode, setCopiedMode] = useState<'all' | 'body' | null>(null);
+  const [copiedMode, setCopiedMode] = useState<'all' | 'body' | 'rich' | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [replyHistory, setReplyHistory] = useState<
     Array<{ id: string; client: string; subject: string; reply: SalesReplyResult }>
   >(() => {
@@ -347,6 +354,54 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     void navigator.clipboard.writeText(text);
     setCopiedMode(mode);
     window.setTimeout(() => setCopiedMode(null), 2000);
+  };
+
+  const handleCopyRichEmail = async () => {
+    const sig = getStoredAdvisorSignature();
+    await copyRichEmailToClipboard({
+      subject: editableSubject,
+      body: editableBody,
+      companyName: preset.name,
+      senderName: sig.name || undefined,
+      senderRole: sig.role || undefined,
+      webSources: latestReply?.webSources,
+    });
+    setCopiedMode('rich');
+    window.setTimeout(() => setCopiedMode(null), 2200);
+  };
+
+  const handleExportPdf = async () => {
+    if (!latestReply || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const sig = getStoredAdvisorSignature();
+      await exportSalesReplyToPdf({
+        companyName: preset.name,
+        senderName: sig.name || undefined,
+        senderRole: sig.role || undefined,
+        clientLabel: latestReply.detectedRecipientEmail || undefined,
+        subject: editableSubject,
+        body: editableBody,
+        webSources: latestReply.webSources,
+      });
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const handlePrintReply = () => {
+    if (!latestReply) return;
+    printCleanReportHtml({
+      title: editableSubject || `Odpowiedź handlowa — ${preset.name}`,
+      subtitle: `${preset.name}${latestReply.detectedRecipientEmail ? ` • Adresat: ${latestReply.detectedRecipientEmail}` : ''}`,
+      bodyMarkdownOrHtml: editableBody,
+      webSources: latestReply.webSources,
+    });
+  };
+
+  const handleInsertSourceLink = (source: WebSource) => {
+    const line = `\nZobacz również / źródło: ${source.title} — ${source.uri}`;
+    setEditableBody((prev) => `${prev.trimEnd()}${line}`);
   };
 
   const handleToggleVoiceNote = () => {
@@ -1014,6 +1069,17 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       <Clock className="h-3 w-3" />
                       Zaoszczędzono ~{latestReply.estimatedTimeSavedMinutes || 15} min
                     </span>
+                    {latestReply.contextStats && (
+                      <span
+                        className="rounded-md border border-indigo-200 bg-indigo-50/70 px-2 py-0.5 text-[10px] font-semibold text-indigo-700"
+                        title={`Inteligentny Kompilator Kontekstu wybrał ${latestReply.contextStats.selectedTilesCount} z ${latestReply.contextStats.totalActiveTiles} kafelków (${latestReply.contextStats.criticalCount} krytycznych, odfiltrowano ${latestReply.contextStats.omittedTilesCount}, oszczędność ok. ${latestReply.contextStats.tokensSavedEstimate} tokenów)`}
+                      >
+                        Kontekst: {latestReply.contextStats.selectedTilesCount}/{latestReply.contextStats.totalActiveTiles}
+                        {latestReply.contextStats.tokensSavedEstimate > 0
+                          ? ` (-${latestReply.contextStats.tokensSavedEstimate} tok.)`
+                          : ''}
+                      </span>
+                    )}
                   </div>
                   <p className="mt-1 text-xs text-slate-500">{latestReply.summaryOfInquiry}</p>
                   {latestReply.buyingSignal && (
@@ -1049,6 +1115,42 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       <Copy className="h-3.5 w-3.5" />
                     )}
                     {copiedMode === 'all' ? 'Skopiowano całość!' : 'Kopiuj Temat + Treść'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyRichEmail()}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
+                    title="Kopiuje gotowy sformatowany HTML + linki źródłowe do wklejenia w Outlook / Gmail (Ctrl+V)"
+                  >
+                    {copiedMode === 'rich' ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <Mail className="h-3.5 w-3.5" />
+                    )}
+                    {copiedMode === 'rich' ? 'Skopiowano E-mail HTML!' : 'Kopiuj gotowy E-mail (HTML)'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleExportPdf()}
+                    disabled={exportingPdf}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-60"
+                    title="Pobierz ofertę / odpowiedź jako sformatowany dokument PDF A4"
+                  >
+                    {exportingPdf ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FileText className="h-3.5 w-3.5 text-indigo-600" />
+                    )}
+                    PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePrintReply}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-300 hover:text-indigo-700"
+                    title="Drukuj lub zapisz jako PDF przez podgląd wydruku"
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    Drukuj
                   </button>
                   <a
                     href={`mailto:${encodeURIComponent(latestReply.detectedRecipientEmail || '')}?subject=${encodeURIComponent(editableSubject)}&body=${encodeURIComponent(editableBody)}`}
@@ -1329,40 +1431,20 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     </button>
                   )}
                 </div>
-                <ul className="space-y-1.5 text-xs text-slate-600">
-                  {latestReply.webAndMarketFactsUsed.length > 0 ? (
-                    latestReply.webAndMarketFactsUsed.map((fact, idx) => (
-                      <li key={idx} className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500" />
-                        <span>{fact}</span>
-                      </li>
-                    ))
-                  ) : (
-                    <li className="text-slate-400">
-                      Odpowiedź oparta w 100% na wewnętrznej Bazie Wiedzy.
-                    </li>
-                  )}
-                </ul>
-                {latestReply.webSources && latestReply.webSources.length > 0 && (
-                  <div className="mt-3 border-t border-slate-100 pt-2.5 space-y-1">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Zweryfikowane źródła Google Search:
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {latestReply.webSources.map((src, si) => (
-                        <a
-                          key={si}
-                          href={src.uri}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 rounded-lg border border-indigo-100 bg-indigo-50/70 px-2 py-1 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-100"
-                        >
-                          <ExternalLink className="h-2.5 w-2.5" />
-                          <span className="max-w-[180px] truncate">{src.title}</span>
-                        </a>
-                      ))}
-                    </div>
-                  </div>
+                {latestReply.webAndMarketFactsUsed.length === 0 &&
+                (!latestReply.webSources || latestReply.webSources.length === 0) &&
+                (!latestReply.searchQueries || latestReply.searchQueries.length === 0) ? (
+                  <p className="text-xs text-slate-400">
+                    Odpowiedź oparta w 100% na wewnętrznej Bazie Wiedzy.
+                  </p>
+                ) : (
+                  <WebSourcesPanel
+                    webFactsUsed={latestReply.webAndMarketFactsUsed}
+                    webSources={latestReply.webSources}
+                    searchQueries={latestReply.searchQueries}
+                    onInsertSourceLink={handleInsertSourceLink}
+                    title="Źródła zewnętrzne (Google Search) — kliknij, aby otworzyć lub wkleić"
+                  />
                 )}
               </div>
             </div>

@@ -128,6 +128,64 @@
   border-color: rgba(51, 65, 85, 0.8) !important;
 }
 
+.theme-dark .markdown-content table {
+  background-color: #0f172a !important;
+}
+
+.theme-dark .markdown-content thead tr {
+  background-color: #1e293b !important;
+}
+
+.theme-dark .markdown-content th {
+  color: #f8fafc !important;
+}
+
+.theme-dark .markdown-content td {
+  color: #e2e8f0 !important;
+}
+
+.theme-dark .markdown-content code {
+  background-color: rgba(30, 41, 59, 0.95) !important;
+  color: #a5b4fc !important;
+}
+
+.theme-dark .markdown-content blockquote {
+  background-color: rgba(49, 46, 129, 0.32) !important;
+  color: #e2e8f0 !important;
+}
+
+.theme-dark .markdown-content a {
+  color: #818cf8 !important;
+}
+
+.theme-dark .bg-emerald-50,
+.theme-dark .bg-emerald-50\/75 {
+  background-color: rgba(6, 78, 59, 0.35) !important;
+}
+
+.theme-dark .border-emerald-200,
+.theme-dark .border-emerald-200\/90 {
+  border-color: rgba(16, 185, 129, 0.35) !important;
+}
+
+.theme-dark .text-emerald-950,
+.theme-dark .text-emerald-800 {
+  color: #a7f3d0 !important;
+}
+
+.theme-dark .bg-indigo-50,
+.theme-dark .bg-indigo-50\/70 {
+  background-color: rgba(49, 46, 129, 0.4) !important;
+}
+
+.theme-dark .border-indigo-200 {
+  border-color: rgba(99, 102, 241, 0.4) !important;
+}
+
+.theme-dark .text-indigo-700 {
+  color: #c7d2fe !important;
+}
+
 @keyframes enterSlideUp {
   0% {
     opacity: 0;

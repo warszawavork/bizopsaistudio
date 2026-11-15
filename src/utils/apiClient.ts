@@ -3,11 +3,13 @@ import type {
   AppLanguage,
   AuditResult,
   ChatPerspective,
+  ContextStats,
   DocComparisonResult,
   IntegrationsConfig,
   KnowledgeConsistencyResult,
   KnowledgeTile,
   SalesReplyResult,
+  WebSource,
   WebhookSendResult,
   WorkflowRunResult,
 } from '../types';
@@ -127,9 +129,17 @@ async function postJson<T>(url: string, body: Record<string, unknown>): Promise<
     headers: buildHeaders(),
     body: JSON.stringify(body),
   });
-  const data = (await response.json()) as T & { error?: string };
+  let data: (T & { error?: string }) | null = null;
+  try {
+    data = (await response.json()) as T & { error?: string };
+  } catch {
+    data = null;
+  }
   if (!response.ok) {
-    throw new Error(data.error || `Błąd serwera HTTP ${response.status}`);
+    throw new Error(data?.error || `Błąd serwera HTTP ${response.status}`);
+  }
+  if (!data) {
+    throw new Error('Serwer zwrócił niepoprawną odpowiedź JSON.');
   }
   return data;
 }
@@ -155,8 +165,10 @@ export async function sendChatQuery(params: {
 }): Promise<{
   answer: string;
   citedTileIds: string[];
-  webSources?: Array<{ title: string; uri: string }>;
+  webSources?: WebSource[];
+  searchQueries?: string[];
   webFactsUsed?: string[];
+  contextStats?: ContextStats;
   confidence: 'high' | 'medium' | 'low';
   suggestedFollowUps: string[];
   mascotMood: 'happy' | 'thinking' | 'alert' | 'curious';
@@ -341,8 +353,11 @@ export function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 3.8));
 }
 
-export async function fetchCloudTiles(presetId: string): Promise<{ success: boolean; tiles: any[]; count: number }> {
-  const res = await fetch(`/api/tiles?presetId=${encodeURIComponent(presetId)}`);
+export async function fetchCloudTiles(
+  presetId: string,
+  signal?: AbortSignal
+): Promise<{ success: boolean; tiles: any[]; count: number }> {
+  const res = await fetch(`/api/tiles?presetId=${encodeURIComponent(presetId)}`, { signal });
   if (!res.ok) throw new Error(`Błąd pobierania kafelków z chmury: HTTP ${res.status}`);
   return res.json();
 }
@@ -356,16 +371,12 @@ export async function saveBatchCloudTiles(tiles: any[], presetId: string, author
 }
 
 export async function deleteCloudTile(id: string): Promise<{ success: boolean }> {
-  try {
-    const res = await fetch(`/api/tiles?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
-    if (res.ok) return res.json();
-  } catch {
-    // fallback do POST
-  }
+  const res = await fetch(`/api/tiles?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (res.ok) return res.json();
   return postJson('/api/tiles', { action: 'delete', id });
 }
 
-export async function fetchCloudAiStats(): Promise<{
+export async function fetchCloudAiStats(signal?: AbortSignal): Promise<{
   success: boolean;
   stats: {
     todayRequests: number;
@@ -377,10 +388,18 @@ export async function fetchCloudAiStats(): Promise<{
     maxStorageBytes?: number;
     tilesCount?: number;
     logsCount?: number;
+    autoRetention?: {
+      retentionDays: number;
+      thresholdPercent: number;
+      storageUsagePercent: number;
+      pressureWarning: boolean;
+      lastPrunedCount: number;
+      autoPrunedThisRequest?: boolean;
+    };
   };
   logs: any[];
 }> {
-  const res = await fetch('/api/stats');
+  const res = await fetch('/api/stats', { signal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

@@ -7,10 +7,12 @@ import {
   Check,
   Copy,
   Download,
-  ExternalLink,
+  FileText,
   Globe,
   Loader2,
+  Mail,
   PlusCircle,
+  Printer,
   Send,
   Sparkles,
   Trash2,
@@ -28,6 +30,10 @@ import type {
   MascotMood,
 } from '../types';
 import { sendChatQuery } from '../utils/apiClient';
+import { copyRichEmailToClipboard, escapeHtml, markdownBodyToEmailHtml } from '../utils/emailExport';
+import { exportChatTranscriptToPdf, printCleanReportHtml } from '../utils/pdfExport';
+import { SimpleMarkdown } from './SimpleMarkdown';
+import { WebSourcesPanel } from './WebSourcesPanel';
 
 interface ChatViewProps {
   preset: IndustryPreset;
@@ -77,6 +83,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [useWebSearch, setUseWebSearch] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedEmailId, setCopiedEmailId] = useState<string | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [savedTileMsgId, setSavedTileMsgId] = useState<string | null>(null);
   const [webhookSendingId, setWebhookSendingId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -133,6 +141,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         citedTileIds: res.citedTileIds,
         webSources: res.webSources,
         webFactsUsed: res.webFactsUsed,
+        searchQueries: res.searchQueries,
+        contextStats: res.contextStats,
         confidence: res.confidence,
         suggestedFollowUps: res.suggestedFollowUps,
         latencyMs: res.latencyMs,
@@ -184,6 +194,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
     void navigator.clipboard.writeText(text);
     setCopiedId(id);
     window.setTimeout(() => setCopiedId(null), 1600);
+  };
+
+  const handleCopyAsEmail = async (msg: ChatMessage, msgIndex: number) => {
+    const prevUserQuestion =
+      msgIndex > 0 && messages[msgIndex - 1]?.role === 'user'
+        ? messages[msgIndex - 1].content
+        : 'Informacja i rekomendacja';
+    await copyRichEmailToClipboard({
+      subject: `${preset.name} — ${prevUserQuestion.slice(0, 80)}`,
+      body: msg.content,
+      companyName: preset.name,
+      webSources: msg.webSources,
+    });
+    setCopiedEmailId(msg.id);
+    window.setTimeout(() => setCopiedEmailId(null), 2000);
   };
 
   const handleSaveAsKnowledgeTile = (msg: ChatMessage, msgIndex: number) => {
@@ -252,6 +277,41 @@ export const ChatView: React.FC<ChatViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const handleExportPdf = async () => {
+    if (messages.length === 0 || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      await exportChatTranscriptToPdf({
+        companyName: preset.name,
+        presetName: preset.name,
+        perspectiveLabel: perspective === 'internal' ? 'Wewnętrzny (Zespół)' : 'Klienta (Oficjalny)',
+        messages,
+      });
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const handlePrintChat = () => {
+    if (messages.length === 0) return;
+    const htmlMessages = messages
+      .map((m) => {
+        const roleLabel =
+          m.role === 'user'
+            ? `Pytanie użytkownika • ${new Date(m.timestamp).toLocaleTimeString('pl-PL')}`
+            : `Analiza BizOps AI • ${new Date(m.timestamp).toLocaleTimeString('pl-PL')}`;
+        return `<div class="msg"><div class="msg-role">${escapeHtml(roleLabel)}</div>${markdownBodyToEmailHtml(m.content)}</div>`;
+      })
+      .join('\n');
+
+    printCleanReportHtml({
+      title: `Raport konsultacji AI — ${preset.name}`,
+      subtitle: `Tryb: ${perspective === 'internal' ? 'Wewnętrzny (Zespół)' : 'Klienta (Oficjalny)'} • Liczba wiadomości: ${messages.length}`,
+      bodyMarkdownOrHtml: htmlMessages,
+      isPreformattedHtml: true,
+    });
+  };
+
   return (
     <div className="flex flex-col gap-4">
       {/* Top Controls Bar */}
@@ -317,7 +377,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         {messages.length > 0 && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleExportPdf()}
+              disabled={exportingPdf}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+            >
+              {exportingPdf ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <FileText className="h-3.5 w-3.5" />
+              )}
+              Eksportuj PDF
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintChat}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-700"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              Drukuj
+            </button>
             <button
               type="button"
               onClick={handleExportMarkdown}
@@ -388,7 +469,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       : 'border border-slate-200 bg-slate-50/60 text-slate-800'
                   }`}
                 >
-                  <div className="whitespace-pre-wrap text-[13px]">{msg.content}</div>
+                  {msg.role === 'assistant' ? (
+                    <SimpleMarkdown content={msg.content} />
+                  ) : (
+                    <div className="whitespace-pre-wrap text-[13px]">{msg.content}</div>
+                  )}
 
                   {msg.role === 'assistant' && (
                     <div className="mt-3 space-y-2.5 border-t border-slate-200/80 pt-2.5">
@@ -416,44 +501,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       )}
 
                       {/* 2. Synthesized Facts & Live Sources from the Internet (Google Search) */}
-                      {((msg.webFactsUsed && msg.webFactsUsed.length > 0) ||
-                        (msg.webSources && msg.webSources.length > 0)) && (
-                        <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/60 p-2.5 space-y-1.5">
-                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-900">
-                            <Globe className="h-3.5 w-3.5 text-emerald-600" />
-                            Wiedza uzupełniona z Internetu (Google Search Live):
-                          </div>
-
-                          {msg.webFactsUsed && msg.webFactsUsed.length > 0 && (
-                            <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-emerald-800">
-                              {msg.webFactsUsed.map((fact, idx) => (
-                                <li key={idx}>{fact}</li>
-                              ))}
-                            </ul>
-                          )}
-
-                          {msg.webSources && msg.webSources.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                              {msg.webSources.map((src, idx) => (
-                                <a
-                                  key={idx}
-                                  href={src.uri}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100 transition"
-                                >
-                                  <ExternalLink className="h-2.5 w-2.5" />
-                                  <span className="truncate max-w-[180px]">{src.title}</span>
-                                </a>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      <WebSourcesPanel
+                        webFactsUsed={msg.webFactsUsed}
+                        webSources={msg.webSources}
+                        searchQueries={msg.searchQueries}
+                      />
 
                       {/* Meta & Actions Row */}
                       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           {msg.confidence && (
                             <span
                               className={`rounded-full px-2 py-0.5 font-semibold ${
@@ -470,6 +526,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 : msg.confidence === 'medium'
                                   ? 'Średnia'
                                   : 'Niska'}
+                            </span>
+                          )}
+                          {msg.contextStats && (
+                            <span
+                              className="rounded-full border border-indigo-200 bg-indigo-50/70 px-2 py-0.5 text-[10px] font-medium text-indigo-700"
+                              title={`Inteligentny Kompilator Kontekstu wybrał ${msg.contextStats.selectedTilesCount} z ${msg.contextStats.totalActiveTiles} kafelków (${msg.contextStats.criticalCount} krytycznych, odfiltrowano ${msg.contextStats.omittedTilesCount}, oszczędność ok. ${msg.contextStats.tokensSavedEstimate} tokenów)`}
+                            >
+                              Kontekst: {msg.contextStats.selectedTilesCount}/{msg.contextStats.totalActiveTiles}
+                              {msg.contextStats.tokensSavedEstimate > 0
+                                ? ` (-${msg.contextStats.tokensSavedEstimate} tok.)`
+                                : ''}
                             </span>
                           )}
                           {msg.latencyMs !== undefined && (
@@ -491,6 +558,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               <Copy className="h-3 w-3" />
                             )}
                             {copiedId === msg.id ? 'Skopiowano' : 'Kopiuj'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleCopyAsEmail(msg, msgIndex)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100"
+                            title="Kopiuje odpowiedź z formatowaniem HTML do Outlook / Gmail"
+                          >
+                            {copiedEmailId === msg.id ? (
+                              <Check className="h-3 w-3 text-emerald-600" />
+                            ) : (
+                              <Mail className="h-3 w-3" />
+                            )}
+                            {copiedEmailId === msg.id ? 'Gotowy e-mail!' : 'Jako e-mail'}
                           </button>
 
                           {onAddKnowledgeTile && (

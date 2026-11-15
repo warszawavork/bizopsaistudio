@@ -195,7 +195,7 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
               </div>
 
               {/* 3. Pamięć Bazy Danych Neon Postgres */}
-              <div className="p-4 rounded-2xl bg-slate-950 border border-indigo-500/30">
+              <div className={`p-4 rounded-2xl bg-slate-950 border ${dbPercent >= 80 ? 'border-amber-500/50' : 'border-indigo-500/30'}`}>
                 <div className="flex items-center justify-between text-xs mb-2">
                   <span className="text-indigo-300 font-semibold flex items-center gap-1.5">
                     <Database className="w-3.5 h-3.5 text-indigo-400" />
@@ -207,7 +207,11 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
                 </div>
                 <div className="h-2.5 w-full bg-slate-800 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-indigo-500 to-cyan-400 rounded-full transition-all duration-500"
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      dbPercent >= 80
+                        ? 'bg-gradient-to-r from-amber-500 to-rose-500'
+                        : 'bg-gradient-to-r from-indigo-500 to-cyan-400'
+                    }`}
                     style={{ width: `${Math.max(3, dbPercent)}%` }}
                   />
                 </div>
@@ -216,6 +220,16 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
                   <span>
                     Kafelki: {cloudStats?.tilesCount ?? '—'} • Logi: {cloudStats?.logsCount ?? '—'}
                   </span>
+                </div>
+                <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                  <span>
+                    Auto-Retencja: logi &gt;30 dni lub &ge;80% (410 MB) czyszczą się same.
+                  </span>
+                  {cloudStats?.autoRetention?.lastPrunedCount ? (
+                    <span className="text-emerald-400 font-mono shrink-0">
+                      Usunięto auto: {cloudStats.autoRetention.lastPrunedCount}
+                    </span>
+                  ) : null}
                 </div>
               </div>
 

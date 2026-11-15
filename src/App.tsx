@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   Building2,
+  Download,
   FileSearch,
   Link2,
   MailCheck,
@@ -31,7 +32,13 @@ import {
   recordCloudAiLog,
   sendToWebhook,
 } from './utils/apiClient';
+import { idbGetChatMessages, idbSaveChatMessages } from './utils/offlineDb';
 import { RobustSyncEngine, type SyncState, type SyncStats } from './utils/syncEngine';
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
 import { UI_TEXT } from './utils/i18n';
 import { SalesResponderView } from './components/SalesResponderView';
 import { AuditView } from './components/AuditView';
@@ -158,7 +165,9 @@ export function App() {
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
   const [floatingToasts, setFloatingToasts] = useState<ToastItem[]>([]);
   const [cloudSyncStatus, setCloudSyncStatus] = useState<SyncState>('connected');
+  const [pendingQueueCount, setPendingQueueCount] = useState(0);
   const [cloudStats, setCloudStats] = useState<SyncStats | null>(null);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
     try {
       const raw = localStorage.getItem('bizops_user_profile');
@@ -195,6 +204,43 @@ export function App() {
 
   const syncEngineRef = useRef<RobustSyncEngine | null>(null);
 
+  // PWA Install Prompt listener (ukryty w trybie standalone)
+  useEffect(() => {
+    const isStandalone =
+      typeof window !== 'undefined' &&
+      (window.matchMedia?.('(display-mode: standalone)').matches ||
+        (navigator as unknown as { standalone?: boolean }).standalone === true);
+    if (isStandalone) return;
+
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setInstallPrompt(e as BeforeInstallPromptEvent);
+    };
+    const handleInstalled = () => setInstallPrompt(null);
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    window.addEventListener('appinstalled', handleInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+      window.removeEventListener('appinstalled', handleInstalled);
+    };
+  }, []);
+
+  // Hydratacja historii Czatu AI z lokalnego IndexedDB (Offline-First)
+  useEffect(() => {
+    let cancelled = false;
+    void idbGetChatMessages(preset.id).then((cachedMsgs) => {
+      if (cancelled || !cachedMsgs || cachedMsgs.length === 0) return;
+      setMessagesByPreset((prev) => {
+        if (prev[preset.id] && prev[preset.id].length > 0) return prev;
+        return { ...prev, [preset.id]: cachedMsgs };
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [preset.id]);
+
   // Inicjalizacja RobustSyncEngine na starcie
   useEffect(() => {
     const engine = new RobustSyncEngine(preset.id, currentTiles, {
@@ -203,6 +249,18 @@ export function App() {
         setTilesByPreset((prev) => ({ ...prev, [presetId]: newTiles }));
       },
       onStatsUpdated: (stats) => setCloudStats(stats),
+      onQueueChange: (count) => setPendingQueueCount(count),
+      onQueueFlushed: (flushedCount) => {
+        addFloatingToast({
+          type: 'sync',
+          title: 'Kolejka zsynchronizowana',
+          message: `Wysłano ${flushedCount} zaległych zmian offline do chmury Neon.`,
+        });
+      },
+      onRollback: (presetId, previousTiles, reason) => {
+        setTilesByPreset((prev) => ({ ...prev, [presetId]: previousTiles }));
+        showToast(`Cofnięto zmianę (Rollback): ${reason}`, 'err');
+      },
     });
 
     syncEngineRef.current = engine;
@@ -235,7 +293,19 @@ export function App() {
 
     if (syncEngineRef.current) {
       try {
-        const { deletedCount } = await syncEngineRef.current.pushTiles(next, author);
+        const { deletedCount, mode } = await syncEngineRef.current.pushTiles(next, author);
+        if (mode === 'rolled_back') {
+          return;
+        }
+        if (mode === 'queued') {
+          addFloatingToast({
+            type: 'info',
+            title: 'Zapisano lokalnie (Offline Queue)',
+            message: 'Zmiany trafią do chmury Neon automatycznie po odzyskaniu sieci.',
+            authorName: author,
+          });
+          return;
+        }
         if (deletedCount > 0) {
           addFloatingToast({
             type: 'deleted',
@@ -322,13 +392,18 @@ export function App() {
     };
     setLogs((prev) => [newLogEntry, ...prev]);
 
-    // Send to Neon DB for global multi-device Quota sync!
-    void recordCloudAiLog({
+    // Send to Neon DB for global multi-device Quota sync (with Offline SyncQueue fallback)!
+    const cloudPayload = {
       ...newLogEntry,
       userName: userProfile?.name || 'Bogdan',
-    }).then(() => {
-      refreshCloudStats();
-    });
+    };
+    void recordCloudAiLog(cloudPayload)
+      .then(() => {
+        refreshCloudStats();
+      })
+      .catch(() => {
+        void syncEngineRef.current?.enqueueAiLogOffline(cloudPayload);
+      });
   };
 
   const handleCreateCrmDeal = (dealInput: Omit<CrmDeal, 'id' | 'createdAt'>) => {
@@ -373,11 +448,18 @@ export function App() {
   };
 
   const handleResetPreset = () => {
-    setTilesByPreset((prev) => ({
-      ...prev,
-      [preset.id]: preset.defaultTiles,
-    }));
+    void handleTilesChangeWithCloud(preset.defaultTiles);
     showToast(`Przywrócono domyślną bazę wiedzy dla: ${preset.shortName}`);
+  };
+
+  const handleInstallPwa = async () => {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === 'accepted') {
+      setInstallPrompt(null);
+      showToast('Aplikacja BizOps AI Studio została zainstalowana!');
+    }
   };
 
   const activeTilesCount = currentTiles.filter((t) => t.enabled).length;
@@ -494,7 +576,10 @@ export function App() {
                 <span className="text-[10px] font-normal text-slate-500 ml-1.5">
                   {cloudSyncStatus === 'connected' && '• 🟢 Neon'}
                   {cloudSyncStatus === 'syncing' && '• 🔄 Sync'}
-                  {cloudSyncStatus === 'offline' && '• ⚪ Offline'}
+                  {cloudSyncStatus === 'offline' &&
+                    `• ⚪ Offline${pendingQueueCount > 0 ? ` (${pendingQueueCount})` : ''}`}
+                  {cloudSyncStatus === 'queued' &&
+                    `• 🟠 Kolejka${pendingQueueCount > 0 ? ` (${pendingQueueCount})` : ''}`}
                   {cloudSyncStatus === 'error' && '• 🟡 Ponawianie'}
                 </span>
               </span>
@@ -510,6 +595,17 @@ export function App() {
 
             {/* Utility Toolbar */}
             <div className="flex items-center gap-1 border-l border-slate-200/80 pl-2">
+              {installPrompt && (
+                <button
+                  type="button"
+                  onClick={() => void handleInstallPwa()}
+                  className="inline-flex items-center gap-1 rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 transition"
+                  title="Zainstaluj BizOps AI Studio jako aplikację (PWA)"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Zainstaluj</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() =>
@@ -675,10 +771,7 @@ export function App() {
                 enabled: true,
                 updatedAt: new Date().toISOString().slice(0, 10),
               };
-              setTilesByPreset((prev) => ({
-                ...prev,
-                [preset.id]: [newTile, ...(prev[preset.id] || [])],
-              }));
+              void handleTilesChangeWithCloud([newTile, ...currentTiles]);
               showToast('Dodano odkrytą informację do Bazy Wiedzy');
             }}
             onLogAiCall={appendLog}
@@ -730,9 +823,10 @@ export function App() {
             tiles={currentTiles}
             language={language}
             messages={currentMessages}
-            onMessagesChange={(msgs) =>
-              setMessagesByPreset((prev) => ({ ...prev, [preset.id]: msgs }))
-            }
+            onMessagesChange={(msgs) => {
+              setMessagesByPreset((prev) => ({ ...prev, [preset.id]: msgs }));
+              void idbSaveChatMessages(preset.id, msgs);
+            }}
             perspective={perspective}
             onPerspectiveChange={setPerspective}
             pendingPrompt={pendingChatPrompt}

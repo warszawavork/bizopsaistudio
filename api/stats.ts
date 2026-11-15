@@ -1,10 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { neon } from '@neondatabase/serverless';
+import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 
 const FALLBACK_NEON_URL =
   'postgresql://neondb_owner:npg_IhW6l5JcHfgS@ep-green-art-zaw9ljx1-pooler.c-2.eu-west-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require';
 
-const NEON_FREE_TIER_MAX_BYTES = 512 * 1024 * 1024; // 512 MB (0.5 GB)
+const NEON_FREE_TIER_MAX_BYTES = 512 * 1024 * 1024; // 512 MB
+const RETENTION_DAYS = 30;
+const STORAGE_PRUNE_THRESHOLD_RATIO = 0.80; // 80% (~409.6 MB)
+const STORAGE_PRUNE_THRESHOLD_BYTES = Math.floor(NEON_FREE_TIER_MAX_BYTES * STORAGE_PRUNE_THRESHOLD_RATIO);
+const MIN_LOGS_KEEP_ON_PRESSURE = 30;
 
 function getDb() {
   const connectionString =
@@ -43,6 +47,66 @@ function sendJson(res: ServerResponse, status: number, data: unknown) {
   res.end(JSON.stringify(data));
 }
 
+async function runAutoRetention(sql: NeonQueryFunction<false, false>): Promise<{
+  prunedCount: number;
+  dbSizeBytes: number;
+  logsCount: number;
+  pressureWarning: boolean;
+}> {
+  let prunedCount = 0;
+
+  // 1. Automatyczne usuwanie logów starszych niż 30 dni (sam koniec historii)
+  const expiredRows = await sql`
+    DELETE FROM bizops_ai_logs
+    WHERE timestamp < NOW() - INTERVAL '30 days'
+    RETURNING id;
+  `;
+  prunedCount += expiredRows.length;
+
+  // 2. Sprawdzenie aktualnego rozmiaru bazy i liczby logów
+  const sizeRows = await sql`
+    SELECT 
+      pg_database_size(current_database())::bigint as "dbSizeBytes",
+      (SELECT count(*)::int FROM bizops_ai_logs) as "logsCount";
+  `;
+  let dbSizeBytes = Number(sizeRows[0]?.dbSizeBytes || 7500000);
+  let logsCount = Number(sizeRows[0]?.logsCount || 0);
+
+  // 3. Jeśli pamięć >= 80% limitu Neon (409.6 MB), automatycznie utnij najstarszą część logów
+  if (dbSizeBytes >= STORAGE_PRUNE_THRESHOLD_BYTES && logsCount > 5) {
+    const pruneLimit =
+      logsCount > MIN_LOGS_KEEP_ON_PRESSURE
+        ? Math.max(10, Math.floor((logsCount - MIN_LOGS_KEEP_ON_PRESSURE) * 0.7))
+        : Math.max(1, Math.floor(logsCount * 0.5));
+
+    const pressureDeleted = await sql`
+      DELETE FROM bizops_ai_logs
+      WHERE id IN (
+        SELECT id FROM bizops_ai_logs
+        ORDER BY timestamp ASC
+        LIMIT ${pruneLimit}
+      )
+      RETURNING id;
+    `;
+    prunedCount += pressureDeleted.length;
+
+    const refreshed = await sql`
+      SELECT 
+        pg_database_size(current_database())::bigint as "dbSizeBytes",
+        (SELECT count(*)::int FROM bizops_ai_logs) as "logsCount";
+    `;
+    dbSizeBytes = Number(refreshed[0]?.dbSizeBytes || dbSizeBytes);
+    logsCount = Number(refreshed[0]?.logsCount || logsCount);
+  }
+
+  return {
+    prunedCount,
+    dbSizeBytes,
+    logsCount,
+    pressureWarning: dbSizeBytes >= STORAGE_PRUNE_THRESHOLD_BYTES,
+  };
+}
+
 export default async function handler(req: IncomingMessage & { body?: unknown }, res: ServerResponse) {
   if (req.method === 'OPTIONS') {
     sendJson(res, 204, {});
@@ -52,7 +116,6 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
   try {
     const sql = getDb();
 
-    // Ensure tables exist
     await sql`
       CREATE TABLE IF NOT EXISTS bizops_ai_logs (
         id TEXT PRIMARY KEY,
@@ -85,6 +148,10 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       );
     `;
 
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_bizops_ai_logs_timestamp ON bizops_ai_logs (timestamp DESC);
+    `;
+
     if (req.method === 'GET') {
       const [todayStatsRows, minuteStatsRows, storageRows, recentLogs] = await Promise.all([
         sql`
@@ -106,7 +173,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           SELECT 
             pg_database_size(current_database())::bigint as "dbSizeBytes",
             (SELECT count(*)::int FROM bizops_knowledge_tiles) as "tilesCount",
-            (SELECT count(*)::int FROM bizops_ai_logs) as "logsCount";
+            (SELECT count(*)::int FROM bizops_ai_logs) as "logsCount",
+            EXISTS(SELECT 1 FROM bizops_ai_logs WHERE timestamp < NOW() - INTERVAL '30 days' LIMIT 1) as "hasExpiredLogs";
         `,
         sql`
           SELECT 
@@ -130,9 +198,29 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
 
       const todayRow = todayStatsRows[0] || { todayRequests: 0, todayTokens: 0, avgLatency: 0 };
       const minuteRow = minuteStatsRows[0] || { minuteRequests: 0, minuteTokens: 0 };
-      const storageRow = storageRows[0] || { dbSizeBytes: 7500000, tilesCount: 0, logsCount: 0 };
+      const storageRow = storageRows[0] || {
+        dbSizeBytes: 7500000,
+        tilesCount: 0,
+        logsCount: 0,
+        hasExpiredLogs: false,
+      };
 
-      const dbSizeBytes = Number(storageRow.dbSizeBytes || 7500000);
+      let dbSizeBytes = Number(storageRow.dbSizeBytes || 7500000);
+      let logsCount = Number(storageRow.logsCount || 0);
+      let lastPrunedCount = 0;
+
+      // Automatyczne czyszczenie na GET tylko gdy istnieją przeterminowane logi (>30 dni) lub przekroczono 80% pamięci
+      if (Boolean(storageRow.hasExpiredLogs) || dbSizeBytes >= STORAGE_PRUNE_THRESHOLD_BYTES) {
+        const retention = await runAutoRetention(sql);
+        dbSizeBytes = retention.dbSizeBytes;
+        logsCount = retention.logsCount;
+        lastPrunedCount = retention.prunedCount;
+      }
+
+      const storageUsagePercent = Math.min(
+        100,
+        Math.round((dbSizeBytes / NEON_FREE_TIER_MAX_BYTES) * 100)
+      );
 
       sendJson(res, 200, {
         success: true,
@@ -145,7 +233,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           dbSizeBytes,
           maxStorageBytes: NEON_FREE_TIER_MAX_BYTES,
           tilesCount: Number(storageRow.tilesCount || 0),
-          logsCount: Number(storageRow.logsCount || 0),
+          logsCount,
+          autoRetention: {
+            retentionDays: RETENTION_DAYS,
+            thresholdPercent: Math.round(STORAGE_PRUNE_THRESHOLD_RATIO * 100),
+            storageUsagePercent,
+            pressureWarning: dbSizeBytes >= STORAGE_PRUNE_THRESHOLD_BYTES,
+            lastPrunedCount,
+            autoPrunedThisRequest: lastPrunedCount > 0,
+          },
         },
         logs: recentLogs,
         timestamp: new Date().toISOString(),
@@ -157,11 +253,19 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const body = await readJsonBody(req);
 
       if (body.action === 'clear_old_logs') {
-        await sql`
+        const deleted = await sql`
           DELETE FROM bizops_ai_logs
-          WHERE timestamp < date_trunc('day', NOW());
+          WHERE timestamp < date_trunc('day', NOW())
+          RETURNING id;
         `;
-        sendJson(res, 200, { success: true, message: 'Wyczyszczono archiwalne logi AI sprzed dzisiejszego dnia.' });
+        sendJson(res, 200, {
+          success: true,
+          deletedCount: deleted.length,
+          message:
+            deleted.length > 0
+              ? `Wyczyszczono ${deleted.length} archiwalnych logów AI sprzed dzisiejszego dnia.`
+              : 'Brak archiwalnych logów sprzed dzisiejszego dnia do usunięcia.',
+        });
         return;
       }
 
@@ -190,7 +294,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         ON CONFLICT (id) DO NOTHING;
       `;
 
-      sendJson(res, 200, { success: true, id, message: 'Log zapisany w Neon DB' });
+      // Automatyczna retencja po każdym nowym wpisie (30 dni lub 80% pamięci)
+      const retention = await runAutoRetention(sql);
+
+      sendJson(res, 200, {
+        success: true,
+        id,
+        autoPrunedCount: retention.prunedCount,
+        message: 'Log zapisany w Neon DB',
+      });
       return;
     }
 

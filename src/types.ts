@@ -13,6 +13,16 @@ export type AppTab =
 export interface WebSource {
   title: string;
   uri: string;
+  domain?: string;
+  snippet?: string;
+}
+
+export interface ContextStats {
+  totalActiveTiles: number;
+  selectedTilesCount: number;
+  criticalCount: number;
+  omittedTilesCount: number;
+  tokensSavedEstimate: number;
 }
 
 export interface AdvisorSignature {
@@ -33,6 +43,8 @@ export interface SalesReplyResult {
   companyFactsUsed: string[];
   webAndMarketFactsUsed: string[];
   webSources?: WebSource[];
+  searchQueries?: string[];
+  contextStats?: ContextStats;
   citedTileIds: string[];
   followUpQuestionsToClient: string[];
   internalAdvisorTip: string;
@@ -188,7 +200,9 @@ export interface ChatMessage {
   perspective: ChatPerspective;
   citedTileIds?: string[];
   webSources?: WebSource[];
+  searchQueries?: string[];
   webFactsUsed?: string[];
+  contextStats?: ContextStats;
   confidence?: 'high' | 'medium' | 'low';
   suggestedFollowUps?: string[];
   latencyMs?: number;

@@ -15,6 +15,21 @@ interface ChatMessageInput {
   content: string;
 }
 
+interface LiveWebSource {
+  title: string;
+  uri: string;
+  domain?: string;
+  snippet?: string;
+}
+
+interface ContextStatsResult {
+  totalActiveTiles: number;
+  selectedTilesCount: number;
+  criticalCount: number;
+  omittedTilesCount: number;
+  tokensSavedEstimate: number;
+}
+
 const GEMINI_MODEL = 'gemini-3.8-flash';
 const MODEL_FALLBACK_CHAIN = [
   'gemini-3.8-flash',
@@ -23,6 +38,218 @@ const MODEL_FALLBACK_CHAIN = [
   'gemini-3.5-flash-lite',
 ];
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+const SEMANTIC_CLUSTERS: string[][] = [
+  ['vat', 'podat', '8%', '23%', 'faktur', 'mpp', 'split', 'b2b', 'prywat', 'mieszkan', 'pkob'],
+  ['fundament', 'slup', 'plyt', 'stop', 'posadow', 'grunt', 'dzialk', 'palow'],
+  ['transport', 'hds', 'dzwig', 'dojazd', 'dostaw', 'montaz', 'kilometr', 'km', 'droga'],
+  ['cena', 'cennik', 'koszt', 'ile', 'rabat', 'upust', 'marz', 'wycen', 'kwot', 'pln', 'netto', 'brutto'],
+  ['calorocz', 'wt2021', 'izolac', 'weln', 'rekreac', 'letnisk', 'pozwol', 'zglosz', '35m', '70m', '300'],
+  ['gwaranc', 'serwis', 'reklamac', 'termin', 'czas', 'tygod', 'miesiac', 'realiza', 'sla'],
+  ['kredyt', 'leasing', 'finans', 'transz', 'platn', 'zalicz', 'harmonogram'],
+  ['modul', 'metraz', '54', '73', '82', '84', 'biur', 'pawilon', 'ekspor', 'norweg', 'niemc', 'clo'],
+];
+
+const NEGATIVE_CONSTRAINTS_CLIENT = [
+  'ŻELAZNE ZAKAZY (BEZPIECZEŃSTWO PRAWNO-HANDLOWE — ZERO HALUCYNACJI):',
+  '1. ZAKAZ podawania kwoty cenowej bez wyraźnego określenia stawki VAT (np. 8% VAT lub 23% VAT), waluty, statusu (Netto / Brutto) oraz adnotacji „kalkulacja orientacyjna wymagająca finalnej weryfikacji projektowej”, chyba że cena wynika 1:1 ze sztywnego cennika w bazie.',
+  '2. ZAKAZ obiecywania gwarantowanych terminów odbioru, gratisów lub rabatów przekraczających limity z Bazy Wiedzy.',
+  '3. ZAKAZ ujawniania w treści dla klienta poufnych marż, limitów rabatowych Managera ani dokumentów oznaczonych jako [DOSTĘP: WEWNĘTRZNY/HANDLOWY].',
+  '4. ZAKAZ wymyślania niepotwierdzonych parametrów technicznych (grubość izolacji, klasa drewna, kW przyłącza) — jeśli brak ich w Bazie Wiedzy i w wynikach z Internetu, poinformuj o konieczności doprecyzowania z działem technicznym.',
+].join('\n');
+
+const BUILDING_TYPOLOGY_DETECTION = [
+  'AUTOMATYCZNA KLASYFIKACJA TYPU OBIEKTU / KONTEKSTU (jeśli zapytanie dotyczy nieruchomości, budownictwa lub wyceny):',
+  '- Rozpoznaj wariant: (A) Dom całoroczny mieszkalny (PKOB 1110, wymóg WT2021; osoba fizyczna do 300 m² = potencjalnie 8% VAT; zgłoszenie do 70 m² na własne potrzeby lub pozwolenie), (B) Domek rekreacyjny / letniskowy (uproszczone wymogi, zgłoszenie rekreacji indywidualnej, uwaga na 23% VAT), lub (C) Obiekt B2B / Biuro / Wynajem komercyjny (zawsze 23% VAT + Split Payment MPP powyżej 15 000 zł brutto).',
+].join('\n');
+
+function normalizeSearchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/ą/g, 'a')
+    .replace(/ć/g, 'c')
+    .replace(/ę/g, 'e')
+    .replace(/ł/g, 'l')
+    .replace(/ń/g, 'n')
+    .replace(/ó/g, 'o')
+    .replace(/ś/g, 's')
+    .replace(/[źż]/g, 'z');
+}
+
+function extractQueryTerms(query: string): { exactTokens: string[]; stems: string[]; activeClusters: number[] } {
+  const normalized = normalizeSearchText(query);
+  const rawTokens = normalized.match(/[a-z0-9%]{2,}/g) || [];
+  const exactTokens = Array.from(new Set(rawTokens)).slice(0, 35);
+  const stems = Array.from(
+    new Set(
+      exactTokens
+        .filter((t) => t.length >= 4)
+        .map((t) => t.slice(0, Math.min(t.length, 5)))
+    )
+  );
+
+  const activeClusters: number[] = [];
+  SEMANTIC_CLUSTERS.forEach((cluster, idx) => {
+    const matches = cluster.some((root) => normalized.includes(root));
+    if (matches) activeClusters.push(idx);
+  });
+
+  return { exactTokens, stems, activeClusters };
+}
+
+function scoreTileRelevance(
+  tile: KnowledgeTileInput,
+  terms: { exactTokens: string[]; stems: string[]; activeClusters: number[] }
+): number {
+  const titleNorm = normalizeSearchText(tile.title);
+  const catNorm = normalizeSearchText(tile.category);
+  const contentNorm = normalizeSearchText(tile.content);
+
+  let score = 0;
+
+  for (const tok of terms.exactTokens) {
+    if (titleNorm.includes(tok)) score += 10;
+    if (catNorm.includes(tok)) score += 6;
+    if (contentNorm.includes(tok)) score += 4;
+  }
+
+  for (const stem of terms.stems) {
+    if (titleNorm.includes(stem)) score += 6;
+    if (contentNorm.includes(stem)) score += 2.5;
+  }
+
+  for (const clusterIdx of terms.activeClusters) {
+    const cluster = SEMANTIC_CLUSTERS[clusterIdx];
+    const tileFull = `${titleNorm} ${catNorm} ${contentNorm}`;
+    if (cluster.some((root) => tileFull.includes(root))) {
+      score += 5;
+    }
+  }
+
+  return score;
+}
+
+function formatSingleTile(t: KnowledgeTileInput, relevanceScore?: number): string {
+  const scoreBadge =
+    relevanceScore !== undefined && relevanceScore > 0 ? ` [TRAFNOŚĆ: ${Math.round(relevanceScore)}]` : '';
+  return `[TILE_ID: ${t.id}] [KATEGORIA: ${t.category}] [PRIORYTET: ${
+    t.priority === 'critical' ? 'KRYTYCZNY' : 'STANDARD'
+  }] [DOSTĘP: ${t.visibility === 'internal' ? 'WEWNĘTRZNY/HANDLOWY' : 'PUBLICZNY'}]${scoreBadge}\nTYTUŁ: ${t.title}\nTREŚĆ:\n${t.content}`;
+}
+
+/**
+ * Kompilator Kontekstu (Upgrade #4):
+ * Zawsze zachowuje reguły KRYTYCZNE oraz rerankuje standardowe kafelki pod konkretne zapytanie,
+ * odrzucając szum kontekstowy w większych bazach (oszczędność tokenów + wyższa precyzja i szybkość AI).
+ */
+function compileSmartKnowledgeContext(
+  tiles: KnowledgeTileInput[],
+  perspective: 'client' | 'internal',
+  queryText: string,
+  maxStandardTiles = 7
+): { contextText: string; stats: ContextStatsResult } {
+  const active = tiles.filter((t) => t.enabled && (perspective === 'internal' || t.visibility === 'public'));
+  if (active.length === 0) {
+    return {
+      contextText: 'Brak aktywnych dokumentów w bazie wiedzy firmy.',
+      stats: {
+        totalActiveTiles: 0,
+        selectedTilesCount: 0,
+        criticalCount: 0,
+        omittedTilesCount: 0,
+        tokensSavedEstimate: 0,
+      },
+    };
+  }
+
+  const criticalTiles = active.filter((t) => t.priority === 'critical');
+  const standardTiles = active.filter((t) => t.priority !== 'critical');
+
+  if (!queryText.trim() || standardTiles.length <= 4) {
+    const ordered = [...criticalTiles, ...standardTiles];
+    return {
+      contextText: ordered.map((t) => formatSingleTile(t)).join('\n\n---\n\n'),
+      stats: {
+        totalActiveTiles: active.length,
+        selectedTilesCount: ordered.length,
+        criticalCount: criticalTiles.length,
+        omittedTilesCount: 0,
+        tokensSavedEstimate: 0,
+      },
+    };
+  }
+
+  const terms = extractQueryTerms(queryText);
+  const scored = standardTiles
+    .map((tile) => ({
+      tile,
+      score: scoreTileRelevance(tile, terms),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const relevant = scored.filter((item) => item.score > 0).slice(0, maxStandardTiles);
+
+  // Jeśli dopasowało się mniej niż 2 kafelki (np. ogólne pytanie), dołóż maksymalnie 2 bazowe kafelki ofertowe/techniczne
+  const selectedStandard: Array<{ tile: KnowledgeTileInput; score: number }> = [...relevant];
+  if (selectedStandard.length < 2) {
+    const pickedIds = new Set(selectedStandard.map((s) => s.tile.id));
+    for (const candidate of scored) {
+      if (!pickedIds.has(candidate.tile.id)) {
+        selectedStandard.push(candidate);
+        pickedIds.add(candidate.tile.id);
+      }
+      if (selectedStandard.length >= Math.min(3, scored.length)) break;
+    }
+  }
+
+  const finalTiles = [
+    ...criticalTiles.map((t) => ({ tile: t, score: 999 })),
+    ...selectedStandard,
+  ];
+  const selectedIds = new Set(finalTiles.map((f) => f.tile.id));
+  const omittedChars = active
+    .filter((t) => !selectedIds.has(t.id))
+    .reduce((sum, t) => sum + t.title.length + t.content.length + 80, 0);
+
+  const tokensSavedEstimate = Math.round(omittedChars / 3.8);
+  const omittedCount = active.length - finalTiles.length;
+
+  const header =
+    omittedCount > 0
+      ? `[COMPACT RAG CONTEXT: Wybrano ${finalTiles.length} najtrafniejszych kafelków (w tym ${criticalTiles.length} krytycznych) z ${active.length} aktywnych; pominięto ${omittedCount} niepowiązanych reguł (~${tokensSavedEstimate} tok. oszczędności)]`
+      : '';
+
+  const body = finalTiles
+    .map((item) => formatSingleTile(item.tile, item.score === 999 ? undefined : item.score))
+    .join('\n\n---\n\n');
+
+  return {
+    contextText: header ? `${header}\n\n${body}` : body,
+    stats: {
+      totalActiveTiles: active.length,
+      selectedTilesCount: finalTiles.length,
+      criticalCount: criticalTiles.length,
+      omittedTilesCount: omittedCount,
+      tokensSavedEstimate,
+    },
+  };
+}
+
+function extractDomainFromUrlOrTitle(uri: string, title?: string): string {
+  try {
+    const host = new URL(uri).hostname.replace(/^www\./i, '');
+    if (host !== 'vertexaisearch.cloud.google.com') {
+      return host;
+    }
+  } catch {
+    // fallback below
+  }
+  if (title) {
+    const domainMatch = title.match(/([a-z0-9-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)/i);
+    if (domainMatch) return domainMatch[1].toLowerCase();
+  }
+  return 'google.com';
+}
 
 async function readJsonBody(req: IncomingMessage & { body?: unknown }): Promise<Record<string, unknown>> {
   if (req.body && typeof req.body === 'object') {
@@ -65,19 +292,6 @@ function resolveApiKey(req: IncomingMessage): { apiKey: string; source: 'custom_
     return { apiKey: envKey, source: 'server_env' };
   }
   return { apiKey: '', source: 'none' };
-}
-
-function formatKnowledgeContext(tiles: KnowledgeTileInput[], perspective: 'client' | 'internal'): string {
-  const active = tiles.filter((t) => t.enabled && (perspective === 'internal' || t.visibility === 'public'));
-  if (active.length === 0) {
-    return 'Brak aktywnych dokumentów w bazie wiedzy firmy.';
-  }
-  return active
-    .map(
-      (t) =>
-        `[TILE_ID: ${t.id}] [KATEGORIA: ${t.category}] [PRIORYTET: ${t.priority === 'critical' ? 'KRYTYCZNY' : 'STANDARD'}] [DOSTĘP: ${t.visibility === 'internal' ? 'WEWNĘTRZNY/HANDLOWY' : 'PUBLICZNY'}]\nTYTUŁ: ${t.title}\nTREŚĆ:\n${t.content}`
-    )
-    .join('\n\n---\n\n');
 }
 
 function parseGeminiJson<T>(text: string): T {
@@ -175,68 +389,106 @@ async function fetchLiveWebContext(
   apiKey: string,
   companyIndustry: string,
   clientMessage: string
-): Promise<{ summary: string; sources: Array<{ title: string; uri: string }> }> {
-  try {
+): Promise<{ summary: string; sources: LiveWebSource[]; searchQueries: string[] }> {
+  const webModels = MODEL_FALLBACK_CHAIN.slice(0, 3);
+
+  for (let i = 0; i < webModels.length; i++) {
+    const model = webModels[i];
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9000);
-    const url = `${GEMINI_BASE_URL}/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const timeoutId = setTimeout(() => controller.abort(), 9500);
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: `Branża: ${companyIndustry}. Wyszukaj w internecie aktualne fakty rynkowe, przepisy (np. VAT, prawo budowlane, eksport, transport/cło, prawa konsumenckie) lub informacje geograficzne potrzebne do rzetelnej odpowiedzi na to zapytanie klienta:\n\n${clientMessage.slice(0, 1200)}\n\nWypisz zwięźle 3-5 najważniejszych aktualnych faktów z sieci.`,
-              },
-            ],
-          },
-        ],
-        tools: [{ google_search: {} }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 450 },
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    try {
+      const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `Branża: ${companyIndustry}. Wyszukaj w internecie aktualne fakty rynkowe, akty prawne (np. ustawa o VAT art. 41 ust. 12, Prawo budowlane art. 29, WT2021, cło/transport, prawa konsumenta) lub dane lokalne potrzebne do rzetelnej odpowiedzi na zapytanie:\n\n${clientMessage.slice(0, 1200)}\n\nWypisz zwięźle 3-5 kluczowych faktów z podaniem podstaw prawnych lub źródeł.`,
+                },
+              ],
+            },
+          ],
+          tools: [{ google_search: {} }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 520 },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      return { summary: '', sources: [] };
-    }
-
-    const data = (await response.json()) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
-        groundingMetadata?: {
-          groundingChunks?: Array<{
-            web?: { uri?: string; title?: string };
-          }>;
-        };
-      }>;
-    };
-
-    const summary = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    const rawChunks = data.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    const seen = new Set<string>();
-    const sources: Array<{ title: string; uri: string }> = [];
-    for (const chunk of rawChunks) {
-      const uri = chunk.web?.uri?.trim();
-      if (uri && !seen.has(uri)) {
-        seen.add(uri);
-        sources.push({
-          title: chunk.web?.title?.trim() || uri,
-          uri,
-        });
+      if (!response.ok) {
+        if ((response.status === 429 || response.status === 503 || response.status === 404) && i < webModels.length - 1) {
+          continue;
+        }
+        return { summary: '', sources: [], searchQueries: [] };
       }
-      if (sources.length >= 4) break;
-    }
 
-    return { summary, sources };
-  } catch {
-    return { summary: '', sources: [] };
+      const data = (await response.json()) as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> };
+          groundingMetadata?: {
+            webSearchQueries?: string[];
+            groundingChunks?: Array<{
+              web?: { uri?: string; title?: string };
+            }>;
+            groundingSupports?: Array<{
+              segment?: { text?: string };
+              groundingChunkIndices?: number[];
+            }>;
+          };
+        }>;
+      };
+
+      const candidate = data.candidates?.[0];
+      const summary = candidate?.content?.parts?.[0]?.text?.trim() || '';
+      const metadata = candidate?.groundingMetadata;
+      const rawChunks = metadata?.groundingChunks || [];
+      const supports = metadata?.groundingSupports || [];
+      const searchQueries = (metadata?.webSearchQueries || []).filter(Boolean).slice(0, 3);
+
+      // Zmapuj fragmenty tekstu (snippety) na konkretne źródła chunkIndex
+      const snippetByChunkIndex = new Map<number, string>();
+      for (const sup of supports) {
+        const text = sup.segment?.text?.trim();
+        const indices = sup.groundingChunkIndices || [];
+        if (!text) continue;
+        for (const chunkIdx of indices) {
+          if (!snippetByChunkIndex.has(chunkIdx)) {
+            snippetByChunkIndex.set(chunkIdx, text.slice(0, 200));
+          }
+        }
+      }
+
+      const seen = new Set<string>();
+      const sources: LiveWebSource[] = [];
+      for (let idx = 0; idx < rawChunks.length; idx++) {
+        const chunk = rawChunks[idx];
+        const uri = chunk.web?.uri?.trim();
+        if (uri && /^https?:\/\//i.test(uri) && !seen.has(uri)) {
+          seen.add(uri);
+          const rawTitle = chunk.web?.title?.trim() || uri;
+          sources.push({
+            title: rawTitle,
+            uri,
+            domain: extractDomainFromUrlOrTitle(uri, rawTitle),
+            snippet: snippetByChunkIndex.get(idx),
+          });
+        }
+        if (sources.length >= 5) break;
+      }
+
+      return { summary, sources, searchQueries };
+    } catch {
+      clearTimeout(timeoutId);
+      if (i < webModels.length - 1) continue;
+    }
   }
+
+  return { summary: '', sources: [], searchQueries: [] };
 }
 
 export default async function handler(req: IncomingMessage & { body?: unknown }, res: ServerResponse): Promise<void> {
@@ -295,13 +547,24 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const tiles = (Array.isArray(body.knowledgeTiles) ? body.knowledgeTiles : []) as KnowledgeTileInput[];
       const messages = (Array.isArray(body.messages) ? body.messages : []) as ChatMessageInput[];
 
-      const knowledgeContext = formatKnowledgeContext(tiles, perspective);
+      const recentUserQuery = messages
+        .filter((m) => m.role === 'user')
+        .slice(-2)
+        .map((m) => m.content)
+        .join(' ');
+      const { contextText: knowledgeContext, stats: contextStats } = compileSmartKnowledgeContext(
+        tiles,
+        perspective,
+        recentUserQuery,
+        7
+      );
+
       const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
 
       const liveWeb =
         useWebSearch && lastUserMessage
           ? await fetchLiveWebContext(apiKey, companyIndustry, lastUserMessage)
-          : { summary: '', sources: [] };
+          : { summary: '', sources: [], searchQueries: [] };
 
       const systemText = [
         `Jesteś oficjalnym Ekspertem i Asystentem AI firmy "${companyName}" (branża: ${companyIndustry}).`,
@@ -309,12 +572,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           ? 'TRYB PRACY: WEWNĘTRZNY (Dla Pracownika / Handlowca / Managera). Masz dostęp do pełnej bazy wraz z notatkami wewnętrznymi, marżami, ryzykami operacyjnymi i checklistami oraz do aktualnej wiedzy z Internetu (Google Search).'
           : 'TRYB PRACY: KLIENT ZEWNĘTRZNY. Odpowiadaj uprzejmie, profesjonalnie i sprzedażowo. Opieraj się na publicznej bazie wiedzy firmy oraz aktualnej wiedzy rynkowej z Internetu. Nie ujawniaj wewnętrznych marż ani poufnych procedur.',
         langInstruction,
-        'ZASADY GŁĘBOKIEJ SYNTEZY (BAZA WIEDZY + INTERNET):',
-        '1. Łącz fakty z wewnętrznej Bazy Wiedzy Firmy z aktualnymi informacjami z Internetu (przepisy prawne, VAT, prawo budowlane, normy techniczne, logistyka, ceny rynkowe, geografia).',
-        '2. W sprawach dotyczących oferty naszej firmy (ceny, modele, gwarancja, rabaty) zawsze priorytet ma Baza Wiedzy Firmy. Gdy pytanie wykracza poza bazę firmy lub wymaga kontekstu rynkowego/prawnego, wykorzystaj sekcję WIEDZA Z INTERNETU.',
-        '3. W polu citedTileIds podaj dokładne wartości TILE_ID kafelków z bazy, z których skorzystałeś.',
-        '4. W polu webFactsUsed wypisz krótko (1-3 punkty) fakty lub przepisy zaczerpnięte z Internetu (lub pustą tablicę, jeśli nie były potrzebne).',
-        '5. Twoim towarzyszem w aplikacji jest profesjonalny Kotek Inżynier AI ("Mruczek BizOps") — wygeneruj krótki komentarz mascotTip (max 12 słów) i dopasuj mascotMood.',
+        perspective === 'client' ? NEGATIVE_CONSTRAINTS_CLIENT : 'Nigdy nie wymyślaj parametrów technicznych ani liczb nieobecnych w bazie wiedzy lub źródłach z sieci.',
+        BUILDING_TYPOLOGY_DETECTION,
+        'ZASADY GŁĘBOKIEJ SYNTEZY I FORMATOWANIA (BAZA WIEDZY + INTERNET):',
+        '1. Łącz fakty z wewnętrznej Bazy Wiedzy Firmy z aktualnymi informacjami z Internetu (przepisy prawne, VAT, prawo budowlane, normy techniczne WT2021, logistyka, ceny rynkowe).',
+        '2. W sprawach oferty naszej firmy (ceny, modele, rabaty) pierwszeństwo ma Baza Wiedzy Firmy. Gdy pytanie wymaga przepisów lub tła rynkowego, użyj sekcji WIEDZA Z INTERNETU.',
+        '3. FORMATOWANIE ODPOWIEDZI (answer): Stosuj czytelny Markdown: krótkie sekcje `###`, wypunktowania, **pogrubienia kluczowych liczb** oraz przy porównaniach/kosztorysach/VAT przejrzyste tabele Markdown (`| Parametr | Wartość | Uwagi |`).',
+        '4. W polu citedTileIds podaj dokładne wartości TILE_ID kafelków z bazy, z których skorzystałeś.',
+        '5. W polu webFactsUsed wypisz 1-4 konkretne fakty/przepisy zaczerpnięte z Internetu (lub pustą tablicę, jeśli nie były potrzebne).',
+        '6. Twoim towarzyszem w aplikacji jest Kotek Inżynier AI ("Mruczek BizOps") — wygeneruj zwięzły mascotTip (max 12 słów) i dobierz mascotMood.',
         '',
         '=== BAZA WIEDZY FIRMY ===',
         knowledgeContext,
@@ -323,6 +589,13 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
               '',
               '=== AKTUALNA WIEDZA Z INTERNETU (GOOGLE SEARCH LIVE) ===',
               liveWeb.summary,
+              ...(liveWeb.sources.length > 0
+                ? [
+                    '',
+                    'DOSTĘPNE LINKI ŹRÓDŁOWE (użytkownik zobaczy je jako klikalne karty poniżej odpowiedzi):',
+                    ...liveWeb.sources.map((s) => `- ${s.title} (${s.domain || 'www'}): ${s.uri}`),
+                  ]
+                : []),
             ]
           : []),
       ].join('\n');
@@ -336,7 +609,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         systemInstruction: { parts: [{ text: systemText }] },
         contents: geminiContents,
         generationConfig: {
-          temperature: 0.3,
+          temperature: 0.25,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'OBJECT',
@@ -366,6 +639,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       sendJson(res, 200, {
         ...parsed,
         webSources: liveWeb.sources,
+        searchQueries: liveWeb.searchQueries,
+        contextStats,
         model: result.model || GEMINI_MODEL,
         keySource: source,
         usage: result.usage,
@@ -388,12 +663,18 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         return;
       }
 
-      const knowledgeContext = formatKnowledgeContext(tiles, 'internal');
+      const { contextText: knowledgeContext, stats: contextStats } = compileSmartKnowledgeContext(
+        tiles,
+        'internal',
+        `${fileName} ${documentText.slice(0, 1500)}`,
+        12
+      );
 
       const systemText = [
         `Jesteś starszym audytorem operacyjnym i AI Automation Engine dla firmy "${companyName}" (${companyIndustry}).`,
         'Przeanalizuj przesłany dokument (kosztorys, zapytanie klienta, faktura, notatka głosowa z terenu, specyfikacja) pod kątem zgodności z wewnętrzną Bazą Wiedzy Firmy.',
-        'Zidentyfikuj wszystkie kluczowe parametry, wykryj braki formalne, błędy (np. błędna stawka VAT, brak MPP, niekompletne wymogi techniczne/logistyczne, rozjazd budżetu) i wystaw ocenę kompletności score (0-100).',
+        'Zidentyfikuj wszystkie kluczowe parametry, wykryj braki formalne, błędy (np. błędna stawka VAT 8%/23%, brak MPP powyżej 15 000 zł, niekompletne wymogi techniczne/logistyczne, rozjazd budżetu) i wystaw ocenę kompletności score (0-100).',
+        BUILDING_TYPOLOGY_DETECTION,
         'Wygeneruj gotowy szkic odpowiedzi e-mail do klienta/nadawcy oraz tagi do automatyzacji CRM/Make.',
         langInstruction,
         '',
@@ -480,6 +761,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const parsed = parseGeminiJson<Record<string, unknown>>(result.text);
       sendJson(res, 200, {
         ...parsed,
+        contextStats,
         model: result.model || GEMINI_MODEL,
         keySource: source,
         usage: result.usage,
@@ -500,7 +782,12 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         return;
       }
 
-      const knowledgeContext = formatKnowledgeContext(tiles, 'internal');
+      const { contextText: knowledgeContext } = compileSmartKnowledgeContext(
+        tiles,
+        'internal',
+        `${inputTitle} ${inputText.slice(0, 1500)}`,
+        10
+      );
 
       const systemText = [
         `Jesteś orkiestratorem 3-etapowego potoku Agentic AI (Multi-Agent Workflow) dla firmy "${companyName}" (${companyIndustry}).`,
@@ -625,10 +912,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         return;
       }
 
-      const knowledgeContext = formatKnowledgeContext(tiles, 'internal');
+      const { contextText: knowledgeContext, stats: contextStats } = compileSmartKnowledgeContext(
+        tiles,
+        'internal',
+        `${clientMessage} ${advisorNotes}`,
+        8
+      );
       const liveWeb = useWebKnowledge
         ? await fetchLiveWebContext(apiKey, companyIndustry, clientMessage)
-        : { summary: '', sources: [] };
+        : { summary: '', sources: [], searchQueries: [] };
 
       const replyLangInstruction =
         replyLanguage === 'pl'
@@ -650,8 +942,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
 
       const channelInstruction =
         channel === 'sms'
-          ? 'FORMAT KANAŁU: Wiadomość WhatsApp / SMS — maksymalnie zwięzła (4–7 krótkich zdań lub krótkie wypunktowanie), bez długich wstępów i bez formalnej stopki.'
-          : 'FORMAT KANAŁU: Pełny profesjonalny e-mail biznesowy gotowy do wysyłki.';
+          ? 'FORMAT KANAŁU: Wiadomość WhatsApp / SMS — maksymalnie zwięzła (4–7 krótkich zdań lub krótkie wypunktowanie), bez długich wstępów, bez Markdownu i bez formalnej stopki.'
+          : 'FORMAT KANAŁU: Pełny profesjonalny e-mail biznesowy gotowy do wysłania. Pisz czystym tekstem biznesowym z estetycznymi punktorami „•” oraz wyraźnymi akapitami (UNIKAJ surowych znaczników Markdown typu `###` lub `|` w treści maila `replyBody`).';
 
       const signatureLines =
         advisorSignature?.enabled && channel === 'email'
@@ -668,23 +960,33 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
 
       const systemText = [
         `Jesteś Starszym Doradcą Sprzedażowym i Ekspertem Ofertowania w firmie "${companyName}" (${companyIndustry}).`,
-        'Twoim zadaniem jest przygotowanie kompletnej, gotowej do wysłania odpowiedzi na wklejone zapytanie lub e-mail klienta, aby zaoszczędzić doradcy 90% czasu pracy.',
+        'Twoim zadaniem jest przygotowanie kompletnej, gotowej do wysłania odpowiedzi na wklejone zapytanie klienta, eliminującej ryzyka prawne i oszczędzającej doradcy 90% czasu pracy.',
         toneInstruction,
         channelInstruction,
         replyLangInstruction,
+        NEGATIVE_CONSTRAINTS_CLIENT,
+        BUILDING_TYPOLOGY_DETECTION,
         signatureLines
           ? `PODPIS DORADCY: Zakończ treść maila (replyBody) dokładnie poniższym podpisem:\n${signatureLines}`
           : '',
         includeMiniQuote
-          ? 'MINI-KALKULACJA W TREŚCI: Jeśli w Bazie Wiedzy znajdują się ceny, stawki VAT (8%/23%) lub koszty transportu pasujące do zapytania, wstaw do treści odpowiedzi (replyBody) czytelną, zwartą mini-kalkulację szacunkową (Netto + VAT + Brutto + Transport) w formie przejrzystej listy punktowanej.'
+          ? [
+              'MINI-KALKULACJA W TREŚCI (STANDARD EXECUTIVE):',
+              'Jeśli w Bazie Wiedzy pasują ceny, stawki VAT (8% lub 23%) lub koszty transportu/montażu, wstaw w replyBody przejrzyste zestawienie w formie czystych punktorów:',
+              '• Wariant / Zakres: ...',
+              '• Szacowana wartość netto: ... PLN',
+              '• Stawka VAT (8% Mieszkaniowy lub 23% Rekreacyjny/B2B): ... PLN',
+              '• Szacowana wartość brutto: ... PLN',
+              '• Transport / Fundamenty / Adnotacja: kalkulacja ma charakter orientacyjny i wymaga finalnego potwierdzenia technicznego.',
+            ].join('\n')
           : '',
         includedLinks.length > 0
           ? `LINKI DO MATERIAŁÓW: Wpleć naturalnie w treść odpowiedzi (replyBody) następujące linki dla klienta:\n${includedLinks.map((l) => `- ${l.label}: ${l.url}`).join('\n')}`
           : '',
-        'ANALIZA KONTAKTU I SYGNAŁÓW ZAKUPOWYCH: Wyciągnij z wiadomości klienta adres e-mail (detectedRecipientEmail, lub "" jeśli brak) oraz numer telefonu (detectedRecipientPhone, lub "" jeśli brak). Oceń temperaturę leada (buyingSignal.temperature: HOT / WARM / COLD), krótkie uzasadnienie (summary) oraz wykryte obiekcje klienta (detectedObjections).',
+        'ANALIZA KONTAKTU I SYGNAŁÓW ZAKUPOWYCH: Wyciągnij z wiadomości klienta e-mail (detectedRecipientEmail, lub "" jeśli brak) oraz telefon (detectedRecipientPhone, lub "" jeśli brak). Oceń temperaturę leada (buyingSignal.temperature: HOT / WARM / COLD), wykryty typ obiektu/sprawy (uwzględnij w summaryOfInquiry oraz w internalAdvisorTip — np. „Typ: Dom całoroczny WT2021 vs Rekreacyjny vs B2B”) oraz obiekcje klienta.',
         useWebKnowledge
-          ? 'TRYB HYBRYDOWY (BAZA WIEDZY + LIVE GOOGLE SEARCH): Połącz twarde dane z poniższej Bazy Wiedzy Firmy (modele, ceny, warunki techniczne, VAT, płatności) z poniższymi aktualnymi wynikami z Google Search oraz wiedzą rynkową. Nie ujawniaj w treści maila do klienta poufnych marż wewnętrznych.'
-          : 'TRYB ŚCISŁEJ BAZY WIEDZY: Opieraj się wyłącznie na poniższej Bazie Wiedzy Firmy. Nie ujawniaj poufnych notatek wewnętrznych.',
+          ? 'TRYB HYBRYDOWY (BAZA WIEDZY + LIVE GOOGLE SEARCH): Połącz twarde dane z Bazy Wiedzy Firmy (nie ujawniając poufnych marż [WEWNĘTRZNY]) z aktualnymi wynikami Google Search.'
+          : 'TRYB ŚCISŁEJ BAZY WIEDZY: Opieraj się wyłącznie na Bazie Wiedzy Firmy bez poufnych notatek wewnętrznych.',
         '',
         '=== BAZA WIEDZY FIRMY ===',
         knowledgeContext,
@@ -759,6 +1061,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       sendJson(res, 200, {
         ...parsed,
         webSources: liveWeb.sources,
+        searchQueries: liveWeb.searchQueries,
+        contextStats,
         model: result.model || GEMINI_MODEL,
         keySource: source,
         usage: result.usage,
@@ -780,7 +1084,12 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         return;
       }
 
-      const knowledgeContext = formatKnowledgeContext(tiles, 'internal');
+      const { contextText: knowledgeContext } = compileSmartKnowledgeContext(
+        tiles,
+        'internal',
+        `${docAText.slice(0, 1000)} ${docBText.slice(0, 1000)}`,
+        10
+      );
 
       const systemText = [
         `Jesteś Starszym Audytorem Umów i Kosztorysów w firmie "${companyName}".`,
@@ -847,7 +1156,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
     if (action === 'consistency_check') {
       const companyName = String(body.companyName || 'Firma');
       const tiles = (Array.isArray(body.knowledgeTiles) ? body.knowledgeTiles : []) as KnowledgeTileInput[];
-      const knowledgeContext = formatKnowledgeContext(tiles, 'internal');
+      // Dla audytu spójności zawsze ładujemy całą aktywną bazę (puste queryText)
+      const { contextText: knowledgeContext } = compileSmartKnowledgeContext(tiles, 'internal', '', 100);
 
       const systemText = [
         `Jesteś Audytorem Jakości Bazy Wiedzy AI dla firmy "${companyName}".`,
@@ -1040,7 +1350,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         'Wykryj powtarzające się pytania, nową wiedzę z Internetu (przepisy, standardy, kalkulacje, parametry) lub luki, których nie ma jeszcze w istniejącej Bazie Wiedzy firmy.',
         `Istniejące już kafelki w bazie wiedzy: [${existingTopics}]. NIE DUBLUJ ich.`,
         'Jeśli w dialogach pojawiła się wartościowa wiedza, zsyntetyzuj ją w 1-3 NOWE, konkretne kafelki wiedzy.',
-        'Wszystkie nowo wyuczone kafelki przypisz do kategorii "Wyuczone przez AI (Auto-Learn)".',
+        'Wszystkie nowo wyuczone kafelki przypisz do kategorii "Wyuczone przez AI".',
         langInstruction,
       ].join('\n');
 
