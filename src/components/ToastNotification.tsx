@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Cloud, Sparkles, X } from 'lucide-react';
+import { Cloud, Sparkles, Trash2, X } from 'lucide-react';
 
 export interface ToastItem {
   id: string;
-  type: 'sync' | 'created' | 'updated' | 'info';
+  type: 'sync' | 'created' | 'updated' | 'deleted' | 'info';
   title: string;
   message: string;
   category?: string;
@@ -48,11 +48,15 @@ const ToastCard: React.FC<{ toast: ToastItem; onDismiss: () => void }> = ({ toas
     return () => clearInterval(timer);
   }, [onDismiss]);
 
+  const isDeleted = toast.type === 'deleted';
+
   return (
-    <div className="pointer-events-auto bg-slate-950/95 border border-emerald-500/30 backdrop-blur-xl shadow-xl shadow-slate-950/60 rounded-2xl p-3.5 text-slate-100 transform transition-all duration-300 animate-in slide-in-from-top-4 fade-in overflow-hidden relative">
+    <div className={`pointer-events-auto bg-slate-950/95 border ${isDeleted ? 'border-rose-500/30' : 'border-emerald-500/30'} backdrop-blur-xl shadow-xl shadow-slate-950/60 rounded-2xl p-3.5 text-slate-100 transform transition-all duration-300 animate-in slide-in-from-top-4 fade-in overflow-hidden relative`}>
       <div className="flex items-center gap-3">
-        <div className="p-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 shrink-0">
-          {toast.type === 'sync' ? (
+        <div className={`p-1.5 rounded-xl ${isDeleted ? 'bg-rose-500/10 border border-rose-500/20 text-rose-400' : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'} shrink-0`}>
+          {isDeleted ? (
+            <Trash2 className="w-4 h-4" />
+          ) : toast.type === 'sync' ? (
             <Cloud className="w-4 h-4" />
           ) : (
             <Sparkles className="w-4 h-4" />
@@ -61,7 +65,7 @@ const ToastCard: React.FC<{ toast: ToastItem; onDismiss: () => void }> = ({ toas
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-emerald-400 truncate">
+            <span className={`text-xs font-bold truncate ${isDeleted ? 'text-rose-400' : 'text-emerald-400'}`}>
               {toast.title}
             </span>
             {toast.authorName && (

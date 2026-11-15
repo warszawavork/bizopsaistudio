@@ -112,48 +112,74 @@ export default async function handler(req: IncomingMessage & { query?: Record<st
       const body = await readJsonBody(req);
       const action = String(body.action || 'save');
 
+      // Obsługa jawnego usuwania przez POST { action: 'delete', id: '...' }
+      if (action === 'delete') {
+        const id = String(body.id || url.searchParams.get('id') || '');
+        if (!id) {
+          sendJson(res, 400, { error: 'Brak ID kafelka do usunięcia' });
+          return;
+        }
+
+        await sql`DELETE FROM bizops_knowledge_tiles WHERE id = ${id};`;
+        sendJson(res, 200, { success: true, message: `Usunięto kafelek ${id}` });
+        return;
+      }
+
+      // Synchronizacja wsadowa (batch) – dodaje/aktualizuje oraz usuwa kafelki nieobecne w nowej liście
       if (action === 'batch') {
         const tiles = (body.tiles || []) as KnowledgeTilePayload[];
         const targetPreset = String(body.presetId || presetId);
         const author = String(body.authorName || 'Zespół');
 
-        for (const t of tiles) {
+        if (tiles.length === 0) {
+          await sql`DELETE FROM bizops_knowledge_tiles WHERE preset_id = ${targetPreset};`;
+        } else {
+          const tileIds = tiles.map((t) => t.id);
+          // Usuń z bazy Neon kafelki, które użytkownik usunął w aplikacji
           await sql`
-            INSERT INTO bizops_knowledge_tiles (
-              id, preset_id, title, category, visibility, priority, content, enabled, updated_at, author_name
-            ) VALUES (
-              ${t.id}, 
-              ${targetPreset}, 
-              ${t.title}, 
-              ${t.category}, 
-              ${t.visibility || 'public'}, 
-              ${t.priority || 'standard'}, 
-              ${t.content}, 
-              ${t.enabled ?? true}, 
-              NOW(), 
-              ${author}
-            )
-            ON CONFLICT (id) DO UPDATE SET
-              title = EXCLUDED.title,
-              category = EXCLUDED.category,
-              visibility = EXCLUDED.visibility,
-              priority = EXCLUDED.priority,
-              content = EXCLUDED.content,
-              enabled = EXCLUDED.enabled,
-              updated_at = NOW(),
-              author_name = EXCLUDED.author_name;
+            DELETE FROM bizops_knowledge_tiles
+            WHERE preset_id = ${targetPreset}
+            AND id != ALL(${tileIds}::text[]);
           `;
+
+          for (const t of tiles) {
+            await sql`
+              INSERT INTO bizops_knowledge_tiles (
+                id, preset_id, title, category, visibility, priority, content, enabled, updated_at, author_name
+              ) VALUES (
+                ${t.id}, 
+                ${targetPreset}, 
+                ${t.title}, 
+                ${t.category}, 
+                ${t.visibility || 'public'}, 
+                ${t.priority || 'standard'}, 
+                ${t.content}, 
+                ${t.enabled ?? true}, 
+                NOW(), 
+                ${author}
+              )
+              ON CONFLICT (id) DO UPDATE SET
+                title = EXCLUDED.title,
+                category = EXCLUDED.category,
+                visibility = EXCLUDED.visibility,
+                priority = EXCLUDED.priority,
+                content = EXCLUDED.content,
+                enabled = EXCLUDED.enabled,
+                updated_at = NOW(),
+                author_name = EXCLUDED.author_name;
+            `;
+          }
         }
 
         sendJson(res, 200, {
           success: true,
-          message: `Zsynchronizowano ${tiles.length} kafelków w chmurze Neon!`,
+          message: `Zsynchronizowano ${tiles.length} kafelków w chmurze Neon (w tym usunięcia)!`,
           count: tiles.length,
         });
         return;
       }
 
-      // Single save/update
+      // Pojedynczy zapis/aktualizacja
       const t = (body.tile || body) as KnowledgeTilePayload;
       if (!t.id || !t.title || !t.content) {
         sendJson(res, 400, { error: 'Wymagane pola: id, title, content' });

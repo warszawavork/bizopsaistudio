@@ -27,6 +27,7 @@ import type {
   WebhookConfig,
 } from './types';
 import {
+  deleteCloudTile,
   fetchCloudAiStats,
   fetchCloudTiles,
   recordCloudAiLog,
@@ -212,9 +213,32 @@ export function App() {
 
         const serverTiles = res.tiles;
 
-        // 1. If local has MORE tiles than cloud server (e.g. computer has 30+ tiles):
-        // Silently sync local tiles into Neon cloud on first load
-        if (currentTiles.length > serverTiles.length && isInitial) {
+        // Two-way smart sync comparison:
+        const serverMap = new Map(serverTiles.map((t) => [t.id, t]));
+        const localMap = new Map(currentTiles.map((t) => [t.id, t]));
+
+        // 1. Sprawdzenie, czy kafelek został usunięty na innym urządzeniu
+        const hasServerDeletions = currentTiles.some((t) => !serverMap.has(t.id));
+
+        // 2. Sprawdzenie, czy pojawiły się nowe kafelki z innego urządzenia
+        const hasServerAdditions = serverTiles.some((t) => !localMap.has(t.id));
+
+        // 3. Sprawdzenie aktualizacji treści/statusów
+        const hasServerUpdates = serverTiles.some((st) => {
+          const local = localMap.get(st.id);
+          return (
+            local &&
+            (local.content !== st.content ||
+              local.title !== st.title ||
+              local.category !== st.category ||
+              local.enabled !== st.enabled ||
+              local.priority !== st.priority ||
+              local.visibility !== st.visibility)
+          );
+        });
+
+        // Initial sync: jeśli komputer ma więcej kafelków i żaden nie został celowo usunięty w chmurze
+        if (isInitial && currentTiles.length > serverTiles.length && !hasServerDeletions) {
           const author = userProfile?.name
             ? `${userProfile.name} (${userProfile.role.split('/')[0].trim()})`
             : 'Bogdan';
@@ -223,26 +247,11 @@ export function App() {
           return;
         }
 
-        // 2. If cloud has more tiles (e.g. phone pulling from cloud):
-        if (serverTiles.length > currentTiles.length) {
-          setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
-          if (isMounted) setCloudSyncStatus('connected');
-          return;
-        }
-
-        // 3. Silent check for content updates
-        const localMap = new Map(currentTiles.map((t) => [t.id, t]));
-        let hasChanges = false;
-        for (const st of serverTiles) {
-          const local = localMap.get(st.id);
-          if (!local || local.content !== st.content || local.title !== st.title || local.enabled !== st.enabled) {
-            hasChanges = true;
-            break;
+        // Zastosuj zmiany z serwera (usunięcia, dodania, edycje)
+        if (hasServerDeletions || hasServerAdditions || hasServerUpdates) {
+          if (isMounted) {
+            setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
           }
-        }
-
-        if (hasChanges) {
-          setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
         }
 
         // Silently fetch AI stats
@@ -274,18 +283,38 @@ export function App() {
   }, [preset.id]);
 
   const handleTilesChangeWithCloud = async (next: KnowledgeTile[]) => {
+    // Sprawdź, czy nastąpiło usunięcie kafelka
+    const nextIds = new Set(next.map((t) => t.id));
+    const deletedTiles = currentTiles.filter((t) => !nextIds.has(t.id));
+
     setTilesByPreset((prev) => ({ ...prev, [preset.id]: next }));
     const author = userProfile?.name
       ? `${userProfile.name} (${userProfile.role.split('/')[0].trim()})`
       : 'Użytkownik';
+
     try {
+      // Jeśli usunięto kafelki, wyślij natychmiastowe usunięcie do Neon DB
+      for (const del of deletedTiles) {
+        void deleteCloudTile(del.id);
+      }
+
       await saveBatchCloudTiles(next, preset.id, author);
-      addFloatingToast({
-        type: 'created',
-        title: 'Zapisano w chmurze',
-        message: 'Kafelek zsynchronizowany ze wszystkimi użytkownikami',
-        authorName: author,
-      });
+
+      if (deletedTiles.length > 0) {
+        addFloatingToast({
+          type: 'deleted',
+          title: 'Usunięto z chmury',
+          message: `Kafelek "${deletedTiles[0].title.slice(0, 30)}" usunięty ze wszystkich urządzeń`,
+          authorName: author,
+        });
+      } else {
+        addFloatingToast({
+          type: 'created',
+          title: 'Zapisano w chmurze',
+          message: 'Kafelek zsynchronizowany ze wszystkimi urządzeniami',
+          authorName: author,
+        });
+      }
     } catch (err) {
       console.error('Błąd zapisu kafelka do chmury:', err);
     }

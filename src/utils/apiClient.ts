@@ -331,9 +331,13 @@ export async function saveBatchCloudTiles(tiles: any[], presetId: string, author
 }
 
 export async function deleteCloudTile(id: string): Promise<{ success: boolean }> {
-  const res = await fetch(`/api/tiles?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Błąd usuwania kafelka: HTTP ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(`/api/tiles?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (res.ok) return res.json();
+  } catch {
+    // fallback do POST
+  }
+  return postJson('/api/tiles', { action: 'delete', id });
 }
 
 export async function fetchCloudAiStats(): Promise<{
