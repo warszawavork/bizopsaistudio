@@ -4,19 +4,20 @@ import type { AiOpsLogEntry } from '../types';
 
 interface GeminiQuotaWidgetProps {
   logs: AiOpsLogEntry[];
+  cloudStats?: { todayRequests: number; todayTokens: number; avgLatency: number };
 }
 
 const DAILY_FREE_LIMIT_RPD = 1500; // Google AI Studio Free Tier RPD for Gemini Flash
 const RPM_LIMIT = 15; // Requests Per Minute
 
-export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({ logs }) => {
+export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({ logs, cloudStats }) => {
   const [modalOpen, setModalOpen] = useState(false);
 
   // Filter logs for today
   const todayStr = new Date().toISOString().slice(0, 10);
   const todayLogs = logs.filter((l) => l.timestamp.startsWith(todayStr));
-  const requestsToday = todayLogs.length;
-  const tokensToday = todayLogs.reduce((acc, l) => acc + l.totalTokens, 0);
+  const requestsToday = cloudStats ? cloudStats.todayRequests : todayLogs.length;
+  const tokensToday = cloudStats ? cloudStats.todayTokens : todayLogs.reduce((acc, l) => acc + l.totalTokens, 0);
 
   const percentUsed = Math.min(100, Math.round((requestsToday / DAILY_FREE_LIMIT_RPD) * 100));
   const remainingRequests = Math.max(0, DAILY_FREE_LIMIT_RPD - requestsToday);

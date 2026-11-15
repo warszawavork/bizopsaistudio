@@ -335,3 +335,17 @@ export async function deleteCloudTile(id: string): Promise<{ success: boolean }>
   if (!res.ok) throw new Error(`Błąd usuwania kafelka: HTTP ${res.status}`);
   return res.json();
 }
+
+export async function fetchCloudAiStats(): Promise<{
+  success: boolean;
+  stats: { todayRequests: number; todayTokens: number; avgLatency: number };
+  logs: any[];
+}> {
+  const res = await fetch('/api/stats');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function recordCloudAiLog(log: any): Promise<{ success: boolean }> {
+  return postJson('/api/stats', log);
+}

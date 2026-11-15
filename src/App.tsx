@@ -27,7 +27,13 @@ import type {
   SalesReplyResult,
   WebhookConfig,
 } from './types';
-import { fetchCloudTiles, saveBatchCloudTiles, sendToWebhook } from './utils/apiClient';
+import {
+  fetchCloudAiStats,
+  fetchCloudTiles,
+  recordCloudAiLog,
+  saveBatchCloudTiles,
+  sendToWebhook,
+} from './utils/apiClient';
 import { UI_TEXT } from './utils/i18n';
 import { SalesResponderView } from './components/SalesResponderView';
 import { AuditView } from './components/AuditView';
@@ -154,6 +160,7 @@ export function App() {
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
   const [floatingToasts, setFloatingToasts] = useState<ToastItem[]>([]);
   const [cloudSyncStatus, setCloudSyncStatus] = useState<'connected' | 'syncing' | 'error'>('connected');
+  const [cloudStats, setCloudStats] = useState<{ todayRequests: number; todayTokens: number; avgLatency: number } | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
     try {
       const raw = localStorage.getItem('bizops_user_profile');
@@ -284,6 +291,15 @@ export function App() {
           }
         }
 
+        try {
+          const statsRes = await fetchCloudAiStats();
+          if (isMounted && statsRes.success) {
+            setCloudStats(statsRes.stats);
+          }
+        } catch {
+          // stats optional
+        }
+
         if (isMounted) setCloudSyncStatus('connected');
       } catch (err) {
         console.warn('Błąd synchronizacji chmury Neon:', err);
@@ -367,16 +383,25 @@ export function App() {
   };
 
   const appendLog = (entry: Omit<AiOpsLogEntry, 'id' | 'timestamp' | 'presetName' | 'model'>) => {
-    setLogs((prev) => [
-      {
-        id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        timestamp: new Date().toISOString(),
-        presetName: preset.shortName,
-        model: 'gemini-3.8-flash',
-        ...entry,
-      },
-      ...prev,
-    ]);
+    const newLogEntry: AiOpsLogEntry = {
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      presetName: preset.shortName,
+      model: 'gemini-3.8-flash',
+      ...entry,
+    };
+    setLogs((prev) => [newLogEntry, ...prev]);
+
+    // Send to Neon DB for global multi-device Quota sync!
+    void recordCloudAiLog({
+      ...newLogEntry,
+      userName: userProfile?.name || 'Bogdan',
+    }).then(() => {
+      // Refresh stats
+      void fetchCloudAiStats().then((res) => {
+        if (res.success) setCloudStats(res.stats);
+      });
+    });
   };
 
   const handleCreateCrmDeal = (dealInput: Omit<CrmDeal, 'id' | 'createdAt'>) => {
@@ -531,7 +556,7 @@ export function App() {
               <span className="hidden sm:inline">Neon Sync</span>
             </div>
 
-            <GeminiQuotaWidget logs={logs} />
+            <GeminiQuotaWidget logs={logs} cloudStats={cloudStats || undefined} />
 
             <button
               type="button"

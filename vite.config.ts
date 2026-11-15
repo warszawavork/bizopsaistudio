@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 import aiHandler from './api/ai';
 import webhookHandler from './api/webhook';
 import tilesHandler from './api/tiles';
+import statsHandler from './api/stats';
 
 function localApiBridgePlugin(): Plugin {
   return {
@@ -18,6 +19,9 @@ function localApiBridgePlugin(): Plugin {
       });
       server.middlewares.use('/api/tiles', (req, res) => {
         void tilesHandler(req, res);
+      });
+      server.middlewares.use('/api/stats', (req, res) => {
+        void statsHandler(req, res);
       });
     },
   };
