@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, CheckCircle2, Clock, Database, RefreshCw, Users, X, Zap } from 'lucide-react';
+import {
+  Activity,
+  CheckCircle2,
+  Clock,
+  Database,
+  RefreshCw,
+  Sparkles,
+  Users,
+  X,
+  Zap,
+} from 'lucide-react';
 import type { AiOpsLogEntry } from '../types';
 import type { SyncStats } from '../utils/syncEngine';
 
@@ -7,6 +17,7 @@ interface GeminiQuotaWidgetProps {
   logs: AiOpsLogEntry[];
   cloudStats?: SyncStats;
   onRefreshStats?: () => void;
+  onOpenAutoLearning?: () => void;
 }
 
 const DAILY_FREE_LIMIT_RPD = 1500; // Google AI Studio Free Tier RPD
@@ -27,6 +38,7 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
   logs,
   cloudStats,
   onRefreshStats,
+  onOpenAutoLearning,
 }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [resetCountdown, setResetCountdown] = useState(getTimeUntilMidnightReset());
@@ -83,8 +95,15 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
 
       {/* Rozbudowany Modal Limitów i Pamięci Chmury */}
       {modalOpen && (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="relative w-full max-w-lg bg-slate-900 border border-slate-700/80 shadow-2xl rounded-3xl p-6 text-slate-100 max-h-[90vh] overflow-y-auto">
+        <div
+          onClick={() => setModalOpen(false)}
+          className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-xl bg-slate-900 border border-slate-700/80 shadow-2xl rounded-3xl p-6 text-slate-100 max-h-[90vh] overflow-y-auto"
+          >
+            {/* Header okna z czytelnym przyciskiem X */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400">
@@ -99,12 +118,12 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 {onRefreshStats && (
                   <button
                     type="button"
                     onClick={onRefreshStats}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800 transition"
+                    className="p-1.5 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:text-cyan-400 hover:border-cyan-500/50 transition"
                     title="Odśwież stan z bazy Neon"
                   >
                     <RefreshCw className="w-4 h-4" />
@@ -113,7 +132,8 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
                 <button
                   type="button"
                   onClick={() => setModalOpen(false)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+                  className="flex items-center justify-center h-8 w-8 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 transition"
+                  title="Zamknij okno (Esc)"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -199,7 +219,36 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
                 </div>
               </div>
 
-              {/* 4. Ostatnie zapytania z zespołu (Zsynchronizowane między telefonem a PC) */}
+              {/* 4. Samouczenie AI (Auto-Learning Banner) */}
+              {onOpenAutoLearning && (
+                <div className="rounded-2xl border border-indigo-500/30 bg-gradient-to-r from-indigo-950/60 to-purple-950/60 p-3.5 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-300 shrink-0">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-bold text-white truncate">
+                        Samouczenie AI (Auto-Learning)
+                      </h4>
+                      <p className="text-[11px] text-slate-300">
+                        AI analizuje pytania i tworzy nową wiedzę w grupie „Wyuczone przez AI”.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModalOpen(false);
+                      onOpenAutoLearning();
+                    }}
+                    className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-3 py-1.5 transition"
+                  >
+                    Otwórz moduł
+                  </button>
+                </div>
+              )}
+
+              {/* 5. Ostatnie zapytania z zespołu (Zsynchronizowane między telefonem a PC) */}
               {recentLogs.length > 0 && (
                 <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800">
                   <div className="flex items-center justify-between mb-2">
@@ -235,7 +284,7 @@ export const GeminiQuotaWidget: React.FC<GeminiQuotaWidgetProps> = ({
                 </div>
               )}
 
-              {/* 5. Informacja o darmowym planie */}
+              {/* 6. Informacja o darmowym planie */}
               <div className="p-3.5 rounded-2xl bg-emerald-950/30 border border-emerald-500/20 flex items-start gap-3">
                 <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                 <div className="text-xs text-slate-300 space-y-1">

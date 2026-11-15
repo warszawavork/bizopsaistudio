@@ -505,6 +505,7 @@ export function App() {
               logs={logs}
               cloudStats={cloudStats || undefined}
               onRefreshStats={refreshCloudStats}
+              onOpenAutoLearning={() => setActiveTab('knowledge')}
             />
 
             {/* Utility Toolbar */}
@@ -711,6 +712,7 @@ export function App() {
             preset={preset}
             tiles={currentTiles}
             language={language}
+            messages={currentMessages}
             onTilesChange={handleTilesChangeWithCloud}
             onResetPreset={handleResetPreset}
             onTestTileInChat={(prompt) => {

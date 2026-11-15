@@ -260,6 +260,28 @@ export async function runSmartIngest(params: {
   return postJson('/api/ai', { action: 'ingest', ...params });
 }
 
+export async function runAutoDistillKnowledge(params: {
+  companyName: string;
+  companyIndustry: string;
+  language?: AppLanguage;
+  dialogs: Array<{ question: string; answer: string; webFactsUsed?: string[] }>;
+  knowledgeTiles: KnowledgeTile[];
+}): Promise<{
+  learningSummary: string;
+  newTilesDiscovered: Array<{
+    title: string;
+    category: string;
+    visibility: 'public' | 'internal';
+    priority?: 'standard' | 'critical';
+    content: string;
+  }>;
+  model: string;
+  latencyMs: number;
+  usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
+}> {
+  return postJson('/api/ai', { action: 'auto_distill', ...params });
+}
+
 export async function sendToWebhook(params: {
   webhookUrl: string;
   simulate: boolean;

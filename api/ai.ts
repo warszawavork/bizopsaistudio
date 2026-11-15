@@ -1009,6 +1009,82 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       return;
     }
 
+    if (action === 'auto_distill') {
+      const companyName = String(body.companyName || 'Firma');
+      const companyIndustry = String(body.companyIndustry || 'Operacje B2B');
+      const recentDialogs = (Array.isArray(body.dialogs) ? body.dialogs : []) as Array<{
+        question: string;
+        answer: string;
+        webFactsUsed?: string[];
+      }>;
+      const existingTiles = (Array.isArray(body.knowledgeTiles) ? body.knowledgeTiles : []) as KnowledgeTileInput[];
+
+      if (recentDialogs.length === 0) {
+        sendJson(res, 400, { error: 'Brak zapytań do analizy i nauki.' });
+        return;
+      }
+
+      const existingTopics = existingTiles.map((t) => t.title).join(', ');
+      const dialogsText = recentDialogs
+        .map(
+          (d, idx) =>
+            `[Dialog #${idx + 1}]\nPYTANIE: ${d.question}\nODPOWIEDŹ: ${d.answer}\nFAKTY Z INTERNETU: ${
+              d.webFactsUsed?.join('; ') || 'brak'
+            }`
+        )
+        .join('\n\n---\n\n');
+
+      const systemText = [
+        `Jesteś Głównym Analitykiem i Architektem Samouczącej się Bazy Wiedzy AI (Continuous Auto-Learning) dla firmy "${companyName}" (${companyIndustry}).`,
+        'Twoim zadaniem jest przeanalizowanie ostatnich zapytań użytkowników i odpowiedzi.',
+        'Wykryj powtarzające się pytania, nową wiedzę z Internetu (przepisy, standardy, kalkulacje, parametry) lub luki, których nie ma jeszcze w istniejącej Bazie Wiedzy firmy.',
+        `Istniejące już kafelki w bazie wiedzy: [${existingTopics}]. NIE DUBLUJ ich.`,
+        'Jeśli w dialogach pojawiła się wartościowa wiedza, zsyntetyzuj ją w 1-3 NOWE, konkretne kafelki wiedzy.',
+        'Wszystkie nowo wyuczone kafelki przypisz do kategorii "Wyuczone przez AI (Auto-Learn)".',
+        langInstruction,
+      ].join('\n');
+
+      const result = await callGemini(apiKey, {
+        systemInstruction: { parts: [{ text: systemText }] },
+        contents: [{ role: 'user', parts: [{ text: `PRZEANALIZUJ PONIŻSZE DIALOGI:\n\n${dialogsText}` }] }],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              learningSummary: { type: 'STRING' },
+              newTilesDiscovered: {
+                type: 'ARRAY',
+                items: {
+                  type: 'OBJECT',
+                  properties: {
+                    title: { type: 'STRING' },
+                    category: { type: 'STRING' },
+                    visibility: { type: 'STRING', enum: ['public', 'internal'] },
+                    priority: { type: 'STRING', enum: ['standard', 'critical'] },
+                    content: { type: 'STRING' },
+                  },
+                  required: ['title', 'category', 'visibility', 'priority', 'content'],
+                },
+              },
+            },
+            required: ['learningSummary', 'newTilesDiscovered'],
+          },
+        },
+      });
+
+      const parsed = parseGeminiJson<Record<string, unknown>>(result.text);
+      sendJson(res, 200, {
+        ...parsed,
+        model: result.model || GEMINI_MODEL,
+        keySource: source,
+        usage: result.usage,
+        latencyMs: Date.now() - startedAt,
+      });
+      return;
+    }
+
     sendJson(res, 400, { error: `Nieznana akcja API: ${action}` });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Nieoczekiwany błąd serwera AI.';

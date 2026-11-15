@@ -8,6 +8,7 @@ import {
   Eye,
   EyeOff,
   FileUp,
+  GraduationCap,
   Loader2,
   MessageSquare,
   Plus,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 import type {
   AppLanguage,
+  ChatMessage,
   IndustryPreset,
   KnowledgeConsistencyResult,
   KnowledgeTile,
@@ -28,6 +30,7 @@ import type {
 import {
   estimateTokens,
   fileToBase64,
+  runAutoDistillKnowledge,
   runKnowledgeConsistencyCheck,
   runSmartIngest,
 } from '../utils/apiClient';
@@ -37,6 +40,7 @@ interface KnowledgeViewProps {
   preset: IndustryPreset;
   tiles: KnowledgeTile[];
   language: AppLanguage;
+  messages?: ChatMessage[];
   onTilesChange: (tiles: KnowledgeTile[]) => void;
   onResetPreset: () => void;
   onTestTileInChat: (prompt: string) => void;
@@ -52,7 +56,16 @@ interface KnowledgeViewProps {
   }) => void;
 }
 
-const CATEGORIES = ['Oferta', 'Technologia', 'Finanse & VAT', 'Logistyka', 'Procedury', 'Sprzedaż', 'Wewnętrzne'];
+const CATEGORIES = [
+  'Wyuczone przez AI',
+  'Oferta',
+  'Technologia',
+  'Finanse & VAT',
+  'Logistyka',
+  'Procedury',
+  'Sprzedaż',
+  'Wewnętrzne',
+];
 
 const QUICK_RULE_TEMPLATES = [
   {
@@ -88,16 +101,21 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
   preset,
   tiles,
   language,
+  messages = [],
   onTilesChange,
   onResetPreset,
   onTestTileInChat,
   onMascotUpdate,
   onLogAiCall,
 }) => {
-  const [creatorTab, setCreatorTab] = useState<'ai' | 'manual'>('ai');
+  const [creatorTab, setCreatorTab] = useState<'ai' | 'auto_learn' | 'manual'>('ai');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('Wszystkie');
   const [statusFilter, setStatusFilter] = useState<'all' | 'critical' | 'internal' | 'disabled'>('all');
+
+  // Auto-Learn state
+  const [autoLearning, setAutoLearning] = useState(false);
+  const [autoLearnSuccessMsg, setAutoLearnSuccessMsg] = useState<string | null>(null);
 
   // AI Smart Ingest state
   const [ingestText, setIngestText] = useState('');
@@ -238,7 +256,76 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
     setIngestSummary(null);
     setIngestText('');
     setIngestFile(null);
+    setAutoLearnSuccessMsg(null);
     onMascotUpdate('happy', 'Nowa wiedza zapisana! Już z niej korzystam w czacie i audycie.');
+  };
+
+  const handleRunAutoLearn = async () => {
+    setAutoLearning(true);
+    setIngestError(null);
+    setAutoLearnSuccessMsg(null);
+    onMascotUpdate('thinking', 'Analizuję historię pytań i syntetyzuję nową wiedzę...');
+
+    try {
+      // Przygotuj dialogi z wiadomości czatu
+      const dialogs: Array<{ question: string; answer: string; webFactsUsed?: string[] }> = [];
+      for (let i = 0; i < messages.length; i++) {
+        if (messages[i].role === 'user' && messages[i + 1]?.role === 'assistant') {
+          dialogs.push({
+            question: messages[i].content,
+            answer: messages[i + 1].content,
+            webFactsUsed: messages[i + 1].webFactsUsed,
+          });
+        }
+      }
+
+      // Jeśli w obecnej sesji nie ma dialogów, użyj przykładowych najczęstszych pytań presetów
+      const fallbackQuestions = preset.suggestedQuestions.client.concat(preset.suggestedQuestions.internal);
+      const queryList =
+        dialogs.length > 0
+          ? dialogs
+          : fallbackQuestions.slice(0, 4).map((q) => ({
+              question: q,
+              answer: 'Odpowiedź doradcy handlowego dotycząca standardu i procedur.',
+            }));
+
+      const res = await runAutoDistillKnowledge({
+        companyName: preset.name,
+        companyIndustry: preset.industry,
+        language,
+        dialogs: queryList,
+        knowledgeTiles: tiles,
+      });
+
+      if (res.newTilesDiscovered && res.newTilesDiscovered.length > 0) {
+        setStagedTiles(res.newTilesDiscovered);
+        setIngestSummary(res.learningSummary);
+        setAutoLearnSuccessMsg(`AI odkryło ${res.newTilesDiscovered.length} nowe kafelki wiedzy z analizy zapytań!`);
+        onMascotUpdate('happy', `Nowa wiedza wygenerowana z ${queryList.length} zapytań!`);
+      } else {
+        setAutoLearnSuccessMsg(
+          res.learningSummary ||
+            'Twoja Baza Wiedzy w pełni pokrywa dotychczasowe zapytania — brak brakujących kafelków!'
+        );
+        onMascotUpdate('curious', 'Baza wiedzy jest kompletna na ten moment!');
+      }
+
+      onLogAiCall({
+        action: 'ingest',
+        latencyMs: res.latencyMs,
+        promptTokens: res.usage.promptTokens,
+        candidatesTokens: res.usage.candidatesTokens,
+        totalTokens: res.usage.totalTokens,
+        status: 'success',
+        summary: `Samouczenie AI (Auto-Learn): przeanalizowano ${queryList.length} zapytań`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Błąd samouczenia AI';
+      setIngestError(msg);
+      onMascotUpdate('alert', 'Nie udało się przeprowadzić samouczenia.');
+    } finally {
+      setAutoLearning(false);
+    }
   };
 
   const handleApplyTemplate = (tpl: (typeof QUICK_RULE_TEMPLATES)[number]) => {
@@ -503,7 +590,7 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
               Wszystko, co tu dodasz, natychmiast zasila Eksperta AI, Audytor Dokumentów oraz Multi-Agent Workflow.
             </p>
           </div>
-          <div className="flex rounded-xl bg-slate-100 p-1">
+          <div className="flex flex-wrap rounded-xl bg-slate-100 p-1">
             <button
               type="button"
               onClick={() => setCreatorTab('ai')}
@@ -513,6 +600,16 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
             >
               <Sparkles className="h-3.5 w-3.5" />
               AI Smart Ingest (PDF / Notatki)
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreatorTab('auto_learn')}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                creatorTab === 'auto_learn' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-xs' : 'text-purple-700 hover:text-purple-900'
+              }`}
+            >
+              <GraduationCap className="h-3.5 w-3.5" />
+              Samouczenie AI (Auto-Learn)
             </button>
             <button
               type="button"
@@ -637,6 +734,95 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <span className="font-bold text-slate-900">{st.title}</span>
                         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                          {st.category}
+                        </span>
+                      </div>
+                      <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-600">
+                        {st.content}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : creatorTab === 'auto_learn' ? (
+          <div className="space-y-3.5 rounded-2xl border border-purple-200 bg-gradient-to-br from-purple-50/60 via-white to-indigo-50/40 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-purple-900 flex items-center gap-1.5">
+                  <GraduationCap className="h-4 w-4 text-purple-600" />
+                  Ciągłe Samouczenie AI (Continuous Learning Engine)
+                </h4>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Gemini AI analizuje realne pytania i odpowiedzi ze wszystkich rozmów, identyfikuje luki i automatycznie syntetyzuje nową wiedzę w dedykowanej grupie <strong className="text-purple-800">„Wyuczone przez AI”</strong>.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={autoLearning}
+                onClick={handleRunAutoLearn}
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-purple-600/20 hover:brightness-110 disabled:opacity-60 transition"
+              >
+                {autoLearning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    AI analizuje i uczy się...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4" />
+                    Uruchom samouczenie z pytań ({messages.length} wiadomości)
+                  </>
+                )}
+              </button>
+            </div>
+
+            {autoLearnSuccessMsg && (
+              <div className="rounded-xl border border-purple-200 bg-purple-50 p-3 text-xs text-purple-950 flex items-start gap-2">
+                <Check className="h-4 w-4 text-purple-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold">Raport samouczenia:</p>
+                  <p className="text-[11px] text-purple-900 mt-0.5">{autoLearnSuccessMsg}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Staged Tiles from Auto-Learn */}
+            {stagedTiles.length > 0 && (
+              <div className="rounded-2xl border border-purple-300 bg-purple-50/70 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="text-xs font-bold text-purple-900">
+                      Odkryto {stagedTiles.length} nowe kafelki wiedzy do zatwierdzenia:
+                    </span>
+                    {ingestSummary && <p className="text-[11px] text-purple-800">{ingestSummary}</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStagedTiles([])}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600"
+                    >
+                      Odrzuć
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCommitStaged}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                      Zapisz nowo wyuczone kafelki w chmurze Neon
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  {stagedTiles.map((st, i) => (
+                    <div key={i} className="rounded-xl border border-purple-200 bg-white p-3 text-xs shadow-2xs">
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900">{st.title}</span>
+                        <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-bold text-purple-800">
                           {st.category}
                         </span>
                       </div>
