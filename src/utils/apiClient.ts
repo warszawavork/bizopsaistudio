@@ -429,6 +429,27 @@ export async function clearOldCloudAiLogs(all = false): Promise<{ success: boole
   return postJson('/api/stats', { action: all ? 'purge_logs' : 'clear_old_logs', all });
 }
 
+export interface LangGraphRunResult {
+  success: boolean;
+  framework: string;
+  version: string;
+  executionTimeMs: number;
+  plan: string;
+  draft: string;
+  critique: string;
+  iterations: number;
+  status: string;
+  logs: string[];
+}
+
+export async function runLangGraphWorkflow(input: {
+  task: string;
+  knowledgeContext: string;
+  customKey?: string;
+}): Promise<LangGraphRunResult> {
+  return postJson('/api/langgraph', input);
+}
+
 export async function fetchCloudInbox(
   signal?: AbortSignal,
 ): Promise<{ success: boolean; items: InboxFeedItem[] }> {

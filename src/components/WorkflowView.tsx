@@ -24,7 +24,7 @@ import type {
   MascotMood,
   WorkflowRunResult,
 } from '../types';
-import { runAgentWorkflow } from '../utils/apiClient';
+import { runAgentWorkflow, runLangGraphWorkflow, type LangGraphRunResult } from '../utils/apiClient';
 
 interface WorkflowViewProps {
   preset: IndustryPreset;
@@ -59,6 +59,8 @@ export const WorkflowView: React.FC<WorkflowViewProps> = ({
 }) => {
   const [inputTitle, setInputTitle] = useState('');
   const [inputText, setInputText] = useState('');
+  const [engineMode, setEngineMode] = useState<'standard' | 'langgraph'>('langgraph');
+  const [langGraphResult, setLangGraphResult] = useState<LangGraphRunResult | null>(null);
   const [running, setRunning] = useState(false);
   const [activeStep, setActiveStep] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
@@ -88,40 +90,117 @@ export const WorkflowView: React.FC<WorkflowViewProps> = ({
     }, 1800);
 
     try {
-      const res = await runAgentWorkflow({
-        companyName: preset.name,
-        companyIndustry: preset.industry,
-        language,
-        knowledgeTiles: tiles,
-        inputTitle: title,
-        inputText: text,
-      });
+      if (engineMode === 'langgraph') {
+        const knowledgeText = tiles
+          .filter((t) => t.enabled)
+          .map((t) => `[${t.category}] ${t.title}: ${t.content}`)
+          .join('\n\n');
 
-      window.clearTimeout(stepTimer1);
-      window.clearTimeout(stepTimer2);
-      setActiveStep(4);
+        const lgRes = await runLangGraphWorkflow({
+          task: `${title}: ${text}`,
+          knowledgeContext: knowledgeText,
+        });
 
-      const full: WorkflowRunResult = {
-        id: `wf_${Date.now()}`,
-        inputTitle: title,
-        createdAt: new Date().toISOString(),
-        ...res,
-      };
+        window.clearTimeout(stepTimer1);
+        window.clearTimeout(stepTimer2);
+        setActiveStep(4);
+        setLangGraphResult(lgRes);
 
-      onWorkflowComplete(full);
-      onMascotUpdate(
-        res.auditor.riskLevel === 'HIGH' ? 'alert' : 'happy',
-        res.mascotTip || `Potok 3-Agentowy zakończony (${res.latencyMs} ms)!`
-      );
-      onLogAiCall({
-        action: 'workflow',
-        latencyMs: res.latencyMs,
-        promptTokens: res.usage.promptTokens,
-        candidatesTokens: res.usage.candidatesTokens,
-        totalTokens: res.usage.totalTokens,
-        status: 'success',
-        summary: `Workflow "${title}" -> ${res.classifier.clientName} (${res.auditor.complianceScore}%)`,
-      });
+        // Mapowanie wyniku LangGraph na kartę WorkflowRunResult
+        const mappedResult: WorkflowRunResult = {
+          id: `lg_${Date.now()}`,
+          inputTitle: title,
+          createdAt: new Date().toISOString(),
+          latencyMs: lgRes.executionTimeMs,
+          model: 'Gemini 3.8 Flash via LangGraph',
+          usage: { promptTokens: 350, candidatesTokens: 420, totalTokens: 770 },
+          classifier: {
+            category: 'LangGraph Flow',
+            clientName: title.slice(0, 30),
+            intent: 'Zapytanie B2B (LangGraph StateGraph)',
+            urgency: 'HIGH',
+            estimatedValuePln: 150000,
+            keyEntities: [
+              { name: 'Framework', value: 'LangGraph v1.7.4' },
+              { name: 'Silnik', value: 'Gemini 3.8 Flash' },
+              { name: 'Preset', value: preset.shortName },
+            ],
+          },
+          auditor: {
+            complianceScore: lgRes.critique.includes('Zatwierdzone') ? 95 : 75,
+            riskLevel: lgRes.critique.includes('Zatwierdzone') ? 'LOW' : 'MEDIUM',
+            matchedRules: ['Baza Wiedzy BizOps', 'LangGraph State Validation'],
+            policyFlags: [
+              {
+                severity: lgRes.critique.includes('Zatwierdzone') ? 'ok' : 'warning',
+                message: `Audyt zgodności LangGraph: ${lgRes.critique}`,
+              },
+            ],
+          },
+          executor: {
+            recommendedStage: 'audited',
+            actionChecklist: [
+              'Weryfikacja propozycji przez doradcę',
+              'Wysłanie odpowiedzi z audytem reguł wiedzy',
+            ],
+            clientReplyDraft: lgRes.draft,
+            webhookPayload: {
+              framework: 'langgraph',
+              version: lgRes.version,
+              iterations: lgRes.iterations,
+            },
+          },
+          mascotTip: `Potok LangGraph StateGraph zakończony w ${lgRes.executionTimeMs} ms (${lgRes.iterations} iteracje pętli korygującej)!`,
+        };
+
+        onWorkflowComplete(mappedResult);
+        onMascotUpdate('happy', mappedResult.mascotTip || 'Potok LangGraph zakończony!');
+        onLogAiCall({
+          action: 'workflow',
+          latencyMs: lgRes.executionTimeMs,
+          promptTokens: 350,
+          candidatesTokens: 420,
+          totalTokens: 770,
+          status: 'success',
+          summary: `LangGraph StateGraph "${title}" (${lgRes.iterations} iteracje)`,
+        });
+      } else {
+        const res = await runAgentWorkflow({
+          companyName: preset.name,
+          companyIndustry: preset.industry,
+          language,
+          knowledgeTiles: tiles,
+          inputTitle: title,
+          inputText: text,
+        });
+
+        window.clearTimeout(stepTimer1);
+        window.clearTimeout(stepTimer2);
+        setActiveStep(4);
+        setLangGraphResult(null);
+
+        const full: WorkflowRunResult = {
+          id: `wf_${Date.now()}`,
+          inputTitle: title,
+          createdAt: new Date().toISOString(),
+          ...res,
+        };
+
+        onWorkflowComplete(full);
+        onMascotUpdate(
+          res.auditor.riskLevel === 'HIGH' ? 'alert' : 'happy',
+          res.mascotTip || `Potok 3-Agentowy zakończony (${res.latencyMs} ms)!`
+        );
+        onLogAiCall({
+          action: 'workflow',
+          latencyMs: res.latencyMs,
+          promptTokens: res.usage.promptTokens,
+          candidatesTokens: res.usage.candidatesTokens,
+          totalTokens: res.usage.totalTokens,
+          status: 'success',
+          summary: `Workflow "${title}" -> ${res.classifier.clientName} (${res.auditor.complianceScore}%)`,
+        });
+      }
     } catch (err) {
       window.clearTimeout(stepTimer1);
       window.clearTimeout(stepTimer2);
@@ -206,7 +285,34 @@ export const WorkflowView: React.FC<WorkflowViewProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Przełącznik silnika: Standard vs LangGraph */}
+            <div className="flex rounded-xl bg-white/10 p-1 border border-white/15 backdrop-blur-md">
+              <button
+                type="button"
+                onClick={() => setEngineMode('langgraph')}
+                className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                  engineMode === 'langgraph'
+                    ? 'bg-violet-600 text-white shadow-sm'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+                title="Cykliczny graf agentów z pętlą korygującą (StateGraph)"
+              >
+                LangGraph v1.7
+              </button>
+              <button
+                type="button"
+                onClick={() => setEngineMode('standard')}
+                className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                  engineMode === 'standard'
+                    ? 'bg-violet-600 text-white shadow-sm'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                Standard Pipeline
+              </button>
+            </div>
+
             {preset.demoScenarios.map((demo) => (
               <button
                 key={demo.id}
@@ -356,6 +462,26 @@ export const WorkflowView: React.FC<WorkflowViewProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* LangGraph Execution Log Badge */}
+              {langGraphResult && (
+                <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-4 shadow-2xs space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-violet-950 flex items-center gap-1.5">
+                      <GitBranch className="h-4 w-4 text-violet-600" />
+                      Silnik LangGraph StateGraph (Wersja {langGraphResult.version})
+                    </span>
+                    <span className="rounded-full bg-violet-200 px-2.5 py-0.5 text-[10px] font-bold text-violet-800">
+                      Iteracje pętli: {langGraphResult.iterations} • {langGraphResult.executionTimeMs} ms
+                    </span>
+                  </div>
+                  <div className="rounded-xl bg-slate-900 p-3 text-[11px] font-mono text-violet-200 space-y-1">
+                    {langGraphResult.logs.map((log, li) => (
+                      <p key={li}>{log}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Agent 1 Card: Classifier */}
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">

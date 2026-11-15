@@ -12,6 +12,8 @@
     "win:build": "bun ./node_modules/typescript/bin/tsc --noEmit && bun ./node_modules/vite/bin/vite.js build"
   },
   "dependencies": {
+    "@langchain/core": "^1.4.1",
+    "@langchain/langgraph": "^1.7.4",
     "@neondatabase/serverless": "^1.2.1",
     "jspdf": "^2.5.2",
     "lucide-react": "^0.475.0",
