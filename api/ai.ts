@@ -906,6 +906,10 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const advisorSignature = body.advisorSignature as
         | { enabled?: boolean; name?: string; role?: string; phone?: string; email?: string; companyLine?: string }
         | undefined;
+      const followUpDaysSilent =
+        typeof body.followUpDaysSilent === 'number' && body.followUpDaysSilent > 0
+          ? body.followUpDaysSilent
+          : 0;
 
       if (!clientMessage) {
         sendJson(res, 400, { error: 'Wklej treść wiadomości lub zapytania od klienta.' });
@@ -961,6 +965,9 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const systemText = [
         `Jesteś Starszym Doradcą Sprzedażowym i Ekspertem Ofertowania w firmie "${companyName}" (${companyIndustry}).`,
         'Twoim zadaniem jest przygotowanie kompletnej, gotowej do wysłania odpowiedzi na wklejone zapytanie klienta, eliminującej ryzyka prawne i oszczędzającej doradcy 90% czasu pracy.',
+        followUpDaysSilent > 0
+          ? `TRYB FOLLOW-UP PO CISZY (${followUpDaysSilent} dni od ostatniej wiadomości): Klient jeszcze nie odpowiedział na poprzednią ofertę/wiadomość z historii wątku. Napisz uprzejmy, nienachalny, konkretny follow-up: nawiąż krótko do wysłanego wcześniej zakresu/tematu, dopytaj czy pojawiły się pytania techniczne lub finansowe, wspomnij o aktualnej dostępności terminów produkcyjnych/konsultacji (bez sztucznej presji) i zaproponuj jedno proste działanie (krótka rozmowa 10 min lub odpowiedź „TAK/NIE”). Temat zacznij od „Re:” lub krótkiego przypomnienia.`
+          : '',
         toneInstruction,
         channelInstruction,
         replyLangInstruction,
@@ -1220,6 +1227,24 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const fileBase64 = typeof body.fileBase64 === 'string' ? body.fileBase64 : '';
       const fileMimeType = typeof body.fileMimeType === 'string' ? body.fileMimeType : '';
       const fileName = String(body.fileName || (sourceUrl || 'Materiał'));
+      const ingestMode =
+        body.ingestMode === 'book' || body.ingestMode === 'scan_pages'
+          ? body.ingestMode
+          : 'standard';
+      const chunkIndex = typeof body.chunkIndex === 'number' ? body.chunkIndex : undefined;
+      const totalChunks = typeof body.totalChunks === 'number' ? body.totalChunks : undefined;
+      const chapterHint = typeof body.chapterHint === 'string' ? body.chapterHint.trim() : '';
+      const existingTileTitles = Array.isArray(body.existingTileTitles)
+        ? body.existingTileTitles.map((x) => String(x)).filter(Boolean).slice(0, 80)
+        : [];
+      const pageImages = Array.isArray(body.pageImages)
+        ? (body.pageImages as Array<{
+            pageNum?: number;
+            base64?: string;
+            mimeType?: string;
+            dimensionsLabel?: string;
+          }>).filter((p) => p && typeof p.base64 === 'string' && p.base64.length > 0)
+        : [];
 
       if (sourceUrl) {
         if (!/^https?:\/\//i.test(sourceUrl)) {
@@ -1245,7 +1270,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
             .replace(/&amp;/gi, '&')
             .replace(/\s+/g, ' ')
             .trim()
-            .slice(0, 20000);
+            .slice(0, 24000);
           if (!cleaned) {
             sendJson(res, 400, { error: 'Strona nie zawiera czytelnego tekstu do pobrania.' });
             return;
@@ -1258,24 +1283,66 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         }
       }
 
-      if (!rawText && !fileBase64) {
+      if (!rawText && !fileBase64 && pageImages.length === 0) {
         sendJson(res, 400, { error: 'Wklej tekst, podaj link URL lub załącz plik, z którego AI ma się nauczyć nowej wiedzy.' });
         return;
       }
 
+      const isDeepBookMode =
+        ingestMode === 'book' ||
+        ingestMode === 'scan_pages' ||
+        rawText.length > 9000 ||
+        pageImages.length > 1;
+
+      const chunkMeta =
+        totalChunks && chunkIndex !== undefined
+          ? `Fragment ${chunkIndex + 1} z ${totalChunks}${chapterHint ? ` (Sekcja/Rozdział: "${chapterHint}")` : ''}.`
+          : chapterHint
+            ? `Sekcja/Rozdział: "${chapterHint}".`
+            : '';
+
+      const dedupInstruction =
+        existingTileTitles.length > 0
+          ? `JUŻ ISTNIEJĄCE TYTUŁY KAFELKÓW (NIE powielaj identycznych tematów, wyodrębniaj tylko NOWE lub istotnie pogłębione zasady): ${existingTileTitles.join(' | ')}`
+          : '';
+
       const systemText = [
-        `Jesteś architektem bazy wiedzy AI dla firmy "${companyName}".`,
-        'Przekształć dostarczony surowy materiał (notatki, PDF, regulamin, cennik, mail) w 1 do 4 czystych, konkretnych i dobrze ustrukturyzowanych kafelków wiedzy (Knowledge Tiles), które zasilą firmowego bota.',
-        'Każdy kafelek powinien mieć zwięzły tytuł, dopasowaną kategorię (np. Oferta, Finanse & VAT, Technologia, Logistyka, Procedury, Sprzedaż), poziom widoczności (public lub internal), priorytet (standard lub critical) oraz konkretną treść.',
+        `Jesteś głównym architektem i redaktorem Bazy Wiedzy AI dla firmy "${companyName}".`,
+        isDeepBookMode
+          ? [
+              'TRYB STRUKTURYZACJI KSIĄŻKI / OBSZERNEGO DOKUMENTU / RYSUNKÓW:',
+              '1. Wyodrębnij z przekazanego fragmentu od 3 do 8 kompletnych, gęstych w konkrety, tematycznie uporządkowanych kafelków wiedzy (Knowledge Tiles).',
+              '2. ZACHOWAJ WSZYSTKIE konkretne liczby, normy, ceny, wymiary, parametry techniczne, procedury krok po kroku, wzory i ograniczenia prawne — bez lania wody.',
+              '3. Tytuł kafelka niech będzie konkretny i łatwy do wyszukania (jeśli pasuje kontekst rozdziału lub książki, uwzględnij krótki prefiks tematyczny).',
+              '4. Przypisz precyzyjnie jedną z kategorii: "Książka / Podręcznik", "Technologia", "Procedury", "Sprzedaż", "Finanse & VAT", "Logistyka", "Oferta", "Wewnętrzne".',
+              '5. Reguły krytyczne / twarde zakazy / wymogi prawne oznacz jako priority: "critical".',
+            ].join('\n')
+          : 'Przekształć dostarczony surowy materiał (notatki, PDF, regulamin, cennik, mail) w 1 do 4 czystych, konkretnych i dobrze ustrukturyzowanych kafelków wiedzy (Knowledge Tiles), które zasilą firmowego bota. Każdy kafelek powinien mieć zwięzły tytuł, dopasowaną kategorię (np. Oferta, Finanse & VAT, Technologia, Logistyka, Procedury, Sprzedaż, Książka / Podręcznik), poziom widoczności (public lub internal), priorytet (standard lub critical) oraz konkretną treść.',
+        chunkMeta,
+        dedupInstruction,
         langInstruction,
-      ].join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n\n');
 
       const parts: Array<Record<string, unknown>> = [];
       if (fileBase64 && fileMimeType) {
         parts.push({ inlineData: { mimeType: fileMimeType, data: fileBase64 } });
       }
+      if (pageImages.length > 0) {
+        for (const img of pageImages) {
+          parts.push({
+            text: `Strona PDF #${img.pageNum ?? '?'} (${img.dimensionsLabel || 'niestandardowy wymiar'}):`,
+          });
+          parts.push({
+            inlineData: { mimeType: img.mimeType || 'image/jpeg', data: img.base64 },
+          });
+        }
+      }
       parts.push({
-        text: `Źródło: ${fileName}\n\n${rawText || 'Wyodrębnij kluczową wiedzę biznesową z załączonego pliku.'}`,
+        text: `Źródło: ${fileName}${chunkMeta ? ` | ${chunkMeta}` : ''}\n\n${
+          rawText || 'Przeanalizuj dokładnie załączone strony dokumentu / skanu i ustrukturyzuj całą zawartą wiedzę w uporządkowane kafelki.'
+        }`,
       });
 
       const result = await callGemini(apiKey, {

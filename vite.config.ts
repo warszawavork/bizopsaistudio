@@ -6,6 +6,8 @@ import aiHandler from './api/ai';
 import webhookHandler from './api/webhook';
 import tilesHandler from './api/tiles';
 import statsHandler from './api/stats';
+import integrationsHandler from './api/integrations';
+import workspaceHandler from './api/workspace';
 
 function localApiBridgePlugin(): Plugin {
   return {
@@ -23,6 +25,12 @@ function localApiBridgePlugin(): Plugin {
       server.middlewares.use('/api/stats', (req, res) => {
         void statsHandler(req, res);
       });
+      server.middlewares.use('/api/integrations', (req, res) => {
+        void integrationsHandler(req, res);
+      });
+      server.middlewares.use('/api/workspace', (req, res) => {
+        void workspaceHandler(req, res);
+      });
     },
   };
 }
@@ -30,12 +38,13 @@ function localApiBridgePlugin(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), localApiBridgePlugin()],
   build: {
-    chunkSizeWarningLimit: 800,
+    chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
         manualChunks: {
           'react-vendor': ['react', 'react-dom'],
           'pdf-engine': ['jspdf'],
+          'pdf-reader': ['pdfjs-dist'],
           'icons-vendor': ['lucide-react'],
         },
       },

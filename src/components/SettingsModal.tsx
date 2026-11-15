@@ -1,16 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertCircle,
   CheckCircle2,
   Clock,
   Database,
+  Download,
   HardDrive,
   KeyRound,
   Loader2,
   RefreshCw,
   ShieldCheck,
   Trash2,
+  Upload,
   UserCheck,
   X,
   Zap,
@@ -21,8 +23,10 @@ import {
   clearOldCloudAiLogs,
   getStoredAdvisorSignature,
   getStoredCustomKey,
+  getStoredIntegrationsConfig,
   setStoredAdvisorSignature,
   setStoredCustomKey,
+  setStoredIntegrationsConfig,
   testAiConnection,
 } from '../utils/apiClient';
 
@@ -33,6 +37,7 @@ interface SettingsModalProps {
   cloudStats?: SyncStats;
   onRefreshStats?: () => void;
   tilesCount?: number;
+  onBackupRestored?: () => void;
 }
 
 const DAILY_LIMIT_RPD = 1500;
@@ -57,14 +62,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   cloudStats,
   onRefreshStats,
   tilesCount = 0,
+  onBackupRestored,
 }) => {
-  const [activeTab, setActiveTab] = useState<'quotas' | 'api' | 'signature'>('quotas');
+  const [activeTab, setActiveTab] = useState<'quotas' | 'api' | 'signature' | 'backup'>('quotas');
   const [customKey, setCustomKey] = useState(getStoredCustomKey());
   const [signature, setSignature] = useState<AdvisorSignature>(getStoredAdvisorSignature);
   const [testing, setTesting] = useState(false);
   const [clearingLogs, setClearingLogs] = useState(false);
+  const [includeSecretsInBackup, setIncludeSecretsInBackup] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [resetInfo, setResetInfo] = useState(getResetTimeInfo());
+  const backupFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -134,6 +142,114 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       });
     } finally {
       setClearingLogs(false);
+    }
+  };
+
+  const handleExportCompanyBackup = () => {
+    const workspaceKeys: Record<string, unknown> = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k.startsWith('bizops_quick_links_') ||
+          k.startsWith('bizops_objections_playbook_') ||
+          k.startsWith('bizops_deals_v2_') ||
+          k.startsWith('bizops_tiles_v2_'))
+      ) {
+        try {
+          workspaceKeys[k] = JSON.parse(localStorage.getItem(k) || 'null');
+        } catch {
+          // skip malformed
+        }
+      }
+    }
+
+    let customPresets: unknown[] = [];
+    let webhookConfig: unknown = null;
+    try {
+      customPresets = JSON.parse(localStorage.getItem('bizops_custom_presets_v1') || '[]');
+    } catch {
+      customPresets = [];
+    }
+    try {
+      webhookConfig = JSON.parse(localStorage.getItem('bizops_webhook_cfg_v2') || 'null');
+    } catch {
+      webhookConfig = null;
+    }
+
+    const bundle: Record<string, unknown> = {
+      schema: 'bizops-ai-studio-backup-v1',
+      exportedAt: new Date().toISOString(),
+      customPresets,
+      advisorSignature: signature,
+      webhookConfig,
+      workspaceKeys,
+    };
+
+    if (includeSecretsInBackup) {
+      bundle.integrationsConfig = getStoredIntegrationsConfig();
+    }
+
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `BizOps_Konfiguracja_Firmy_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setTestResult({
+      ok: true,
+      text: includeSecretsInBackup
+        ? 'Wyeksportowano pełną kopię konfiguracji wraz z tokenami integracji (.json).'
+        : 'Wyeksportowano bezpieczną kopię konfiguracji firmy bez poufnych tokenów (.json).',
+    });
+  };
+
+  const handleImportCompanyBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const raw = JSON.parse(await file.text()) as Record<string, unknown>;
+      if (raw.schema !== 'bizops-ai-studio-backup-v1') {
+        throw new Error('Nieprawidłowy format pliku kopii zapasowej BizOps AI Studio.');
+      }
+      if (Array.isArray(raw.customPresets)) {
+        localStorage.setItem('bizops_custom_presets_v1', JSON.stringify(raw.customPresets));
+      }
+      if (raw.advisorSignature && typeof raw.advisorSignature === 'object') {
+        const sig = raw.advisorSignature as AdvisorSignature;
+        setSignature(sig);
+        setStoredAdvisorSignature(sig);
+      }
+      if (raw.webhookConfig && typeof raw.webhookConfig === 'object') {
+        localStorage.setItem('bizops_webhook_cfg_v2', JSON.stringify(raw.webhookConfig));
+      }
+      if (raw.workspaceKeys && typeof raw.workspaceKeys === 'object') {
+        for (const [k, val] of Object.entries(raw.workspaceKeys as Record<string, unknown>)) {
+          if (
+            k.startsWith('bizops_quick_links_') ||
+            k.startsWith('bizops_objections_playbook_') ||
+            k.startsWith('bizops_deals_v2_') ||
+            k.startsWith('bizops_tiles_v2_')
+          ) {
+            localStorage.setItem(k, JSON.stringify(val));
+          }
+        }
+      }
+      if (raw.integrationsConfig && typeof raw.integrationsConfig === 'object') {
+        setStoredIntegrationsConfig(raw.integrationsConfig as ReturnType<typeof getStoredIntegrationsConfig>);
+      }
+      onBackupRestored?.();
+      setTestResult({
+        ok: true,
+        text: 'Konfiguracja firmy, profile, linki i stopka zostały przywrócone!',
+      });
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        text: err instanceof Error ? err.message : 'Nie udało się wczytać pliku backupu.',
+      });
     }
   };
 
@@ -220,6 +336,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <UserCheck className="h-3.5 w-3.5 text-emerald-400" />
             Podpis Doradcy
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('backup')}
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition ${
+              activeTab === 'backup'
+                ? 'bg-slate-900 text-white shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Download className="h-3.5 w-3.5 text-indigo-400" />
+            Kopia (.json)
           </button>
         </div>
 
@@ -494,6 +622,56 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onChange={(e) => updateSignature({ email: e.target.value })}
                 placeholder="E-mail"
                 className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-indigo-500"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* ZAKŁADKA 4: KOPIA ZAPASOWA I PRZYWRACANIE */}
+        {activeTab === 'backup' && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-indigo-200/80 bg-indigo-50/60 p-4 text-xs text-indigo-950 space-y-2">
+              <p className="font-bold">Pełny Eksport / Import konfiguracji firmy (.json)</p>
+              <p className="text-[11px] leading-relaxed text-indigo-900">
+                Pobierz jeden plik ze swoimi profilami firm, stopką doradcy, ustawieniami webhooków Make/n8n, linkami oraz biblioteką obiekcji, aby w sekundę przenieść studio na nowy komputer lub zabezpieczyć ustawienia.
+              </p>
+              <label className="flex items-center gap-2 pt-1 text-[11px] font-semibold text-rose-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeSecretsInBackup}
+                  onChange={(e) => setIncludeSecretsInBackup(e.target.checked)}
+                  className="h-4 w-4 rounded border-rose-300 text-rose-600"
+                />
+                <span>
+                  Dołącz poufne tokeny integracji (WhatsApp / Meta Access Token) — zaznaczaj tylko do prywatnego archiwum
+                </span>
+              </label>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={handleExportCompanyBackup}
+                className="flex items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-bold text-white shadow-sm hover:bg-indigo-700"
+              >
+                <Download className="h-4 w-4 text-amber-300" />
+                Pobierz pełną kopię (.json)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => backupFileInputRef.current?.click()}
+                className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-800 shadow-2xs hover:border-indigo-300 hover:bg-indigo-50"
+              >
+                <Upload className="h-4 w-4 text-indigo-600" />
+                Wczytaj kopię z pliku (.json)
+              </button>
+              <input
+                ref={backupFileInputRef}
+                type="file"
+                accept=".json"
+                onChange={(e) => void handleImportCompanyBackup(e)}
+                className="hidden"
               />
             </div>
           </div>

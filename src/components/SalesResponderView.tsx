@@ -5,6 +5,7 @@ import {
   Check,
   Clock,
   Copy,
+  Edit3,
   ExternalLink,
   FileText,
   Flame,
@@ -22,6 +23,7 @@ import {
   MicOff,
   Plus,
   Printer,
+  RefreshCw,
   RotateCcw,
   ShieldAlert,
   Sparkles,
@@ -35,17 +37,25 @@ import type {
   KnowledgeTile,
   ObjectionPlaybookItem,
   QuickLinkItem,
+  ReplyHistoryItem,
   SalesReplyResult,
   WebSource,
 } from '../types';
 import {
+  deleteCloudInboxItem,
+  fetchCloudInbox,
+  fetchCloudWorkspace,
   generateSalesReply,
   getStoredAdvisorSignature,
   getStoredIntegrationsConfig,
+  ingestCloudInboxItem,
+  markCloudInboxHandled,
+  saveCloudWorkspaceKey,
   sendGmailBridge,
   sendWhatsAppMessage,
 } from '../utils/apiClient';
 import { copyRichEmailToClipboard } from '../utils/emailExport';
+import { idbGetWorkspaceItem } from '../utils/offlineDb';
 import { exportSalesReplyToPdf, printCleanReportHtml } from '../utils/pdfExport';
 import { WebSourcesPanel } from './WebSourcesPanel';
 
@@ -54,6 +64,7 @@ interface SalesResponderViewProps {
   tiles: KnowledgeTile[];
   language: AppLanguage;
   latestReply: SalesReplyResult | null;
+  authorName?: string;
   incomingMessage?: string | null;
   onClearIncomingMessage?: () => void;
   onReplyComplete: (reply: SalesReplyResult) => void;
@@ -76,10 +87,18 @@ const QUICK_LINKS_KEY = 'bizops_quick_links_v1';
 const OBJECTIONS_KEY = 'bizops_objections_playbook_v1';
 const INBOX_FEED_KEY = 'bizops_unified_inbox_v1';
 
-const DEFAULT_QUICK_LINKS: QuickLinkItem[] = [
-  { id: 'ql_1', label: 'Katalog modeli PDF', url: 'https://twojafirma.pl/katalog.pdf' },
-  { id: 'ql_2', label: 'Rezerwacja rozmowy (Kalendarz)', url: 'https://cal.com/twojafirma' },
-];
+const DEFAULT_QUICK_LINKS: QuickLinkItem[] = [];
+
+function formatInboxTime(raw: string): string {
+  const ts = Date.parse(raw);
+  if (Number.isNaN(ts)) return raw;
+  return new Date(ts).toLocaleString('pl-PL', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 const DEFAULT_OBJECTIONS: ObjectionPlaybookItem[] = [
   {
@@ -126,44 +145,12 @@ const DEFAULT_OBJECTIONS: ObjectionPlaybookItem[] = [
   },
 ];
 
-const DEFAULT_INBOX_ITEMS: InboxFeedItem[] = [
-  {
-    id: 'inb_1',
-    source: 'whatsapp',
-    senderName: 'Marek Kowalski',
-    senderContact: '+48501234567',
-    preview: 'Dzień dobry, interesuje mnie dom 70m² pod klucz pod Gdańskiem...',
-    fullText:
-      'Dzień dobry, interesuje mnie dom całoroczny 70m² pod klucz na działce pod Gdańskiem. Jaki jest szacunkowy koszt z transportem HDS i czy można na 8% VAT?\nTel: +48 501 234 567',
-    receivedAt: '10 min temu',
-  },
-  {
-    id: 'inb_2',
-    source: 'gmail',
-    senderName: 'Anna Nowak',
-    senderContact: 'anna.nowak@biuro-inwest.pl',
-    preview: 'Zapytanie B2B o 3 moduły biurowe z fakturą VAT 23%...',
-    fullText:
-      'Dzień dobry,\njesteśmy firmą z Wrocławia i planujemy zakup 3 modułów biurowych na wynajem. Proszę o wycenę netto + 23% VAT oraz termin realizacji.\nPozdrawiam,\nAnna Nowak\nanna.nowak@biuro-inwest.pl',
-    receivedAt: '28 min temu',
-  },
-  {
-    id: 'inb_3',
-    source: 'meta',
-    senderName: 'Lead Ads (Instagram)',
-    senderContact: '+48600987654',
-    preview: 'Formularz Meta: Model 45m² • Budżet 220 tys. zł • Śląsk',
-    fullText:
-      'Nowy lead z Meta Lead Ads (Instagram):\nImię: Tomasz Zieliński\nTelefon: +48 600 987 654\nZainteresowanie: Domek rekreacyjny 45m², woj. śląskie, realizacja wiosna.',
-    receivedAt: '1 godz. temu',
-  },
-];
-
 export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   preset,
   tiles,
   language,
   latestReply,
+  authorName,
   incomingMessage,
   onClearIncomingMessage,
   onReplyComplete,
@@ -185,8 +172,14 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(() => {
     try {
-      const raw = localStorage.getItem(QUICK_LINKS_KEY);
-      return raw ? (JSON.parse(raw) as QuickLinkItem[]) : DEFAULT_QUICK_LINKS;
+      const raw = localStorage.getItem(`${QUICK_LINKS_KEY}_${preset.id}`) || localStorage.getItem(QUICK_LINKS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as QuickLinkItem[];
+        if (Array.isArray(parsed)) {
+          return parsed.filter((l) => !l.url.includes('twojafirma.pl') && !l.url.includes('cal.com/twojafirma'));
+        }
+      }
+      return DEFAULT_QUICK_LINKS;
     } catch {
       return DEFAULT_QUICK_LINKS;
     }
@@ -195,10 +188,13 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [showQuickLinks, setShowQuickLinks] = useState<boolean>(false);
   const [newLinkLabel, setNewLinkLabel] = useState('');
   const [newLinkUrl, setNewLinkUrl] = useState('');
+  const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
+  const [editLinkLabel, setEditLinkLabel] = useState('');
+  const [editLinkUrl, setEditLinkUrl] = useState('');
 
   const [objections, setObjections] = useState<ObjectionPlaybookItem[]>(() => {
     try {
-      const raw = localStorage.getItem(OBJECTIONS_KEY);
+      const raw = localStorage.getItem(`${OBJECTIONS_KEY}_${preset.id}`) || localStorage.getItem(OBJECTIONS_KEY);
       return raw ? (JSON.parse(raw) as ObjectionPlaybookItem[]) : DEFAULT_OBJECTIONS;
     } catch {
       return DEFAULT_OBJECTIONS;
@@ -209,14 +205,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [newObjLabel, setNewObjLabel] = useState('');
   const [newObjScript, setNewObjScript] = useState('');
 
-  const [inboxItems] = useState<InboxFeedItem[]>(() => {
+  const [inboxItems, setInboxItems] = useState<InboxFeedItem[]>(() => {
     try {
       const raw = localStorage.getItem(INBOX_FEED_KEY);
-      return raw ? (JSON.parse(raw) as InboxFeedItem[]) : DEFAULT_INBOX_ITEMS;
+      return raw ? (JSON.parse(raw) as InboxFeedItem[]) : [];
     } catch {
-      return DEFAULT_INBOX_ITEMS;
+      return [];
     }
   });
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxFilter, setInboxFilter] = useState<'pending' | 'all'>('pending');
   const [showInbox, setShowInbox] = useState<boolean>(false);
   const [clientMessage, setClientMessage] = useState<string>('');
   const [advisorNotes, setAdvisorNotes] = useState<string>('');
@@ -231,16 +229,100 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [editableBody, setEditableBody] = useState<string>('');
   const [copiedMode, setCopiedMode] = useState<'all' | 'body' | 'rich' | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
-  const [replyHistory, setReplyHistory] = useState<
-    Array<{ id: string; client: string; subject: string; reply: SalesReplyResult }>
-  >(() => {
+  const [replyHistory, setReplyHistory] = useState<ReplyHistoryItem[]>(() => {
     try {
-      const raw = localStorage.getItem(REPLY_HISTORY_KEY);
-      return raw ? JSON.parse(raw) : [];
+      const raw = localStorage.getItem(`${REPLY_HISTORY_KEY}_${preset.id}`) || localStorage.getItem(REPLY_HISTORY_KEY);
+      return raw ? (JSON.parse(raw) as ReplyHistoryItem[]) : [];
     } catch {
       return [];
     }
   });
+
+  const refreshCloudInbox = async () => {
+    setInboxLoading(true);
+    try {
+      const res = await fetchCloudInbox();
+      if (res.success && Array.isArray(res.items)) {
+        setInboxItems(res.items);
+        try {
+          localStorage.setItem(INBOX_FEED_KEY, JSON.stringify(res.items));
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // Offline / cloud fallback stays with local items
+    } finally {
+      setInboxLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshCloudInbox();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateWorkspace = async () => {
+      const [idbLinks, idbObjs, idbHist] = await Promise.all([
+        idbGetWorkspaceItem<QuickLinkItem[]>(preset.id, 'quick_links'),
+        idbGetWorkspaceItem<ObjectionPlaybookItem[]>(preset.id, 'objections'),
+        idbGetWorkspaceItem<ReplyHistoryItem[]>(preset.id, 'reply_history'),
+      ]);
+      if (cancelled) return;
+      if (idbLinks?.payload) setQuickLinks(idbLinks.payload);
+      if (idbObjs?.payload?.length) setObjections(idbObjs.payload);
+      if (idbHist?.payload) setReplyHistory(idbHist.payload);
+
+      try {
+        const cloud = await fetchCloudWorkspace(preset.id);
+        if (cancelled || !cloud.success || !cloud.state) return;
+        if (Array.isArray(cloud.state.quick_links)) {
+          const clean = (cloud.state.quick_links as QuickLinkItem[]).filter(
+            (l) => !l.url.includes('twojafirma.pl') && !l.url.includes('cal.com/twojafirma')
+          );
+          setQuickLinks(clean);
+          localStorage.setItem(`${QUICK_LINKS_KEY}_${preset.id}`, JSON.stringify(clean));
+        }
+        if (Array.isArray(cloud.state.objections) && cloud.state.objections.length > 0) {
+          const objs = cloud.state.objections as ObjectionPlaybookItem[];
+          setObjections(objs);
+          localStorage.setItem(`${OBJECTIONS_KEY}_${preset.id}`, JSON.stringify(objs));
+        }
+        if (Array.isArray(cloud.state.reply_history)) {
+          const hist = cloud.state.reply_history as ReplyHistoryItem[];
+          setReplyHistory(hist);
+          localStorage.setItem(`${REPLY_HISTORY_KEY}_${preset.id}`, JSON.stringify(hist));
+        }
+      } catch {
+        // Offline gracefully uses IDB / localStorage
+      }
+    };
+    void hydrateWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, [preset.id]);
+
+  const persistQuickLinks = (next: QuickLinkItem[]) => {
+    setQuickLinks(next);
+    try {
+      localStorage.setItem(`${QUICK_LINKS_KEY}_${preset.id}`, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+    void saveCloudWorkspaceKey(preset.id, 'quick_links', next, authorName);
+  };
+
+  const persistObjections = (next: ObjectionPlaybookItem[]) => {
+    setObjections(next);
+    try {
+      localStorage.setItem(`${OBJECTIONS_KEY}_${preset.id}`, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+    void saveCloudWorkspaceKey(preset.id, 'objections', next, authorName);
+  };
 
   useEffect(() => {
     if (incomingMessage && incomingMessage.trim()) {
@@ -265,7 +347,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     overrideNote?: string,
     overrideLang?: 'auto' | 'pl' | 'en' | 'no' | 'de',
     overrideTone?: 'sales' | 'concise' | 'formal',
-    overrideChannel?: 'email' | 'sms'
+    overrideChannel?: 'email' | 'sms',
+    followUpDaysSilent?: number
   ) => {
     const msgToUse = overrideMessage ?? clientMessage;
     const noteToUse = overrideNote ?? advisorNotes;
@@ -283,6 +366,14 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       const includedLinks = quickLinks
         .filter((l) => selectedLinkIds.includes(l.id))
         .map((l) => ({ label: l.label, url: l.url }));
+      const effectiveThread =
+        followUpDaysSilent && followUpDaysSilent > 0 && editableBody.trim() && threadHistory.length === 0
+          ? [
+              { role: 'client' as const, text: msgToUse },
+              { role: 'advisor' as const, text: editableBody.trim() },
+            ]
+          : threadHistory;
+
       const result = await generateSalesReply({
         companyName: preset.name,
         companyIndustry: preset.industry,
@@ -296,8 +387,9 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         useWebKnowledge,
         includeMiniQuote,
         includedLinks,
-        threadHistory,
+        threadHistory: effectiveThread,
         advisorSignature,
+        followUpDaysSilent,
       });
 
       onReplyComplete(result);
@@ -305,20 +397,22 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       setEditableBody(result.replyBody);
 
       setReplyHistory((prev) => {
-        const next = [
+        const next: ReplyHistoryItem[] = [
           {
             id: `rh_${Date.now()}`,
             client: result.detectedClientName || 'Klient',
             subject: result.subject,
+            createdAt: new Date().toISOString(),
             reply: result,
           },
           ...prev.filter((item) => item.subject !== result.subject),
-        ].slice(0, 5);
+        ].slice(0, 8);
         try {
-          localStorage.setItem(REPLY_HISTORY_KEY, JSON.stringify(next));
+          localStorage.setItem(`${REPLY_HISTORY_KEY}_${preset.id}`, JSON.stringify(next));
         } catch {
           // ignore
         }
+        void saveCloudWorkspaceKey(preset.id, 'reply_history', next, authorName);
         return next;
       });
 
@@ -329,7 +423,9 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         candidatesTokens: result.usage.candidatesTokens,
         totalTokens: result.usage.totalTokens,
         status: 'success',
-        summary: `Odpowiedź dla: ${result.detectedClientName} (${result.detectedLanguage})`,
+        summary: followUpDaysSilent
+          ? `Follow-up (${followUpDaysSilent} dni) dla: ${result.detectedClientName}`
+          : `Odpowiedź dla: ${result.detectedClientName} (${result.detectedLanguage})`,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Nie udało się wygenerować odpowiedzi.';
@@ -464,15 +560,21 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       url: newLinkUrl.trim(),
     };
     const next = [...quickLinks, item];
-    setQuickLinks(next);
+    persistQuickLinks(next);
     setSelectedLinkIds((prev) => [...prev, item.id]);
     setNewLinkLabel('');
     setNewLinkUrl('');
-    try {
-      localStorage.setItem(QUICK_LINKS_KEY, JSON.stringify(next));
-    } catch {
-      // ignore
-    }
+  };
+
+  const handleSaveEditedLink = () => {
+    if (!editingLinkId || !editLinkLabel.trim() || !editLinkUrl.trim()) return;
+    const next = quickLinks.map((q) =>
+      q.id === editingLinkId ? { ...q, label: editLinkLabel.trim(), url: editLinkUrl.trim() } : q
+    );
+    persistQuickLinks(next);
+    setEditingLinkId(null);
+    setEditLinkLabel('');
+    setEditLinkUrl('');
   };
 
   const handleAddObjection = () => {
@@ -484,15 +586,55 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       script: newObjScript.trim(),
     };
     const next = [item, ...objections];
-    setObjections(next);
+    persistObjections(next);
     setNewObjLabel('');
     setNewObjScript('');
+  };
+
+  const handleToggleInboxHandled = async (item: InboxFeedItem) => {
+    const targetHandled = !item.handled;
+    setInboxItems((prev) =>
+      prev.map((x) =>
+        x.id === item.id ? { ...x, handled: targetHandled, handledBy: targetHandled ? authorName || 'Zespół' : '' } : x
+      )
+    );
     try {
-      localStorage.setItem(OBJECTIONS_KEY, JSON.stringify(next));
+      await markCloudInboxHandled(item.id, targetHandled, authorName || 'Zespół');
     } catch {
-      // ignore
+      // keep optimistic update in offline mode
     }
   };
+
+  const handleDeleteInboxItem = async (id: string) => {
+    setInboxItems((prev) => prev.filter((x) => x.id !== id));
+    try {
+      await deleteCloudInboxItem(id);
+    } catch {
+      // ignore if offline
+    }
+  };
+
+  const handleCreateTestInboxLead = async () => {
+    setInboxLoading(true);
+    try {
+      await ingestCloudInboxItem({
+        source: 'tally',
+        senderName: 'Testowy Inwestor (Formularz WWW)',
+        senderContact: 'kontakt@inwestor-test.pl',
+        fullText: `Dzień dobry,\nproszę o wycenę oraz termin realizacji w zakresie oferty ${preset.name}. Interesuje mnie wariant kompleksowy oraz warunki gwarancji.\nPozdrawiam,\nJan Testowy`,
+      });
+      await refreshCloudInbox();
+      setChannelStatus('Dodano zgłoszenie testowe do Skrzynki w chmurze Neon.');
+    } catch {
+      setError('Nie udało się dodać zgłoszenia testowego do chmury.');
+    } finally {
+      setInboxLoading(false);
+    }
+  };
+
+  const pendingInboxCount = inboxItems.filter((i) => !i.handled).length;
+  const visibleInboxItems =
+    inboxFilter === 'pending' ? inboxItems.filter((i) => !i.handled) : inboxItems;
 
   return (
     <div className="grid gap-6 lg:grid-cols-12">
@@ -507,7 +649,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               className="inline-flex items-center gap-1.5 text-[11px] font-bold text-indigo-900 hover:text-indigo-700"
             >
               <Inbox className="h-3.5 w-3.5 text-indigo-600" />
-              Skrzynka Przychodząca ({inboxItems.length})
+              Skrzynka Przychodząca ({pendingInboxCount} nowych / {inboxItems.length})
               <span className="rounded-full bg-white px-1.5 py-0.5 text-[9px] font-extrabold text-indigo-600 shadow-2xs">
                 {showInbox ? 'Ukryj' : 'Rozwiń'}
               </span>
@@ -515,7 +657,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             <div className="flex items-center gap-1.5">
               {threadHistory.length > 0 && (
                 <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
-                  Wątek: {threadHistory.length / 2} wym.
+                  Wątek: {Math.max(1, Math.round(threadHistory.length / 2))} wym.
                 </span>
               )}
               <button
@@ -532,40 +674,129 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
           </div>
 
           {showInbox && (
-            <div className="space-y-1.5 rounded-2xl border border-slate-200 bg-slate-50/80 p-2.5">
-              {inboxItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setClientMessage(item.fullText);
-                    setThreadHistory([]);
-                    setShowInbox(false);
-                  }}
-                  className="flex w-full items-start justify-between gap-2 rounded-xl border border-slate-200/80 bg-white p-2.5 text-left transition hover:border-indigo-300 hover:bg-indigo-50/40"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[9px] font-extrabold uppercase ${
-                          item.source === 'whatsapp'
-                            ? 'bg-emerald-100 text-emerald-700'
-                            : item.source === 'gmail'
-                              ? 'bg-rose-100 text-rose-700'
-                              : 'bg-indigo-100 text-indigo-700'
-                        }`}
+            <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setInboxFilter('pending')}
+                    className={`rounded-lg px-2 py-1 text-[10px] font-bold ${
+                      inboxFilter === 'pending'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-white text-slate-600 border border-slate-200'
+                    }`}
+                  >
+                    Do odpowiedzi ({pendingInboxCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInboxFilter('all')}
+                    className={`rounded-lg px-2 py-1 text-[10px] font-bold ${
+                      inboxFilter === 'all'
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-white text-slate-600 border border-slate-200'
+                    }`}
+                  >
+                    Wszystkie ({inboxItems.length})
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={inboxLoading}
+                    onClick={() => void handleCreateTestInboxLead()}
+                    className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    + Testowy lead
+                  </button>
+                  <button
+                    type="button"
+                    disabled={inboxLoading}
+                    onClick={() => void refreshCloudInbox()}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-100"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${inboxLoading ? 'animate-spin' : ''}`} />
+                    Odśwież
+                  </button>
+                </div>
+              </div>
+
+              {visibleInboxItems.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-4 text-center text-[11px] text-slate-500">
+                  Skrzynka w chmurze jest pusta. Podłącz Meta / WhatsApp / Make Webhook w „Połączeniach” albo kliknij „+ Testowy lead”.
+                </p>
+              ) : (
+                <div className="max-h-60 space-y-1.5 overflow-y-auto pr-0.5">
+                  {visibleInboxItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`flex items-start justify-between gap-2 rounded-xl border p-2.5 transition ${
+                        item.handled
+                          ? 'border-emerald-200/70 bg-emerald-50/40 opacity-75'
+                          : 'border-slate-200/80 bg-white hover:border-indigo-300'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setClientMessage(item.fullText);
+                          setThreadHistory([]);
+                          setShowInbox(false);
+                        }}
+                        className="min-w-0 flex-1 text-left"
                       >
-                        {item.source}
-                      </span>
-                      <span className="truncate text-[11px] font-bold text-slate-900">
-                        {item.senderName}
-                      </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[9px] font-extrabold uppercase ${
+                              item.source === 'whatsapp'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : item.source === 'gmail'
+                                  ? 'bg-rose-100 text-rose-700'
+                                  : 'bg-indigo-100 text-indigo-700'
+                            }`}
+                          >
+                            {item.source}
+                          </span>
+                          <span className="truncate text-[11px] font-bold text-slate-900">
+                            {item.senderName}
+                          </span>
+                          {item.handled && (
+                            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold text-emerald-800">
+                              Obsłużona
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 truncate text-[11px] text-slate-500">{item.preview}</p>
+                        <span className="mt-0.5 block text-[10px] text-slate-400">
+                          {formatInboxTime(item.receivedAt)}
+                        </span>
+                      </button>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void handleToggleInboxHandled(item)}
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-bold transition ${
+                            item.handled
+                              ? 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                              : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                          }`}
+                          title="Oznacz jako obsłużoną"
+                        >
+                          {item.handled ? 'Cofnij' : 'Obsłużona ✓'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteInboxItem(item.id)}
+                          className="rounded p-1 text-slate-400 hover:text-rose-600"
+                          title="Usuń z chmury"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
-                    <p className="mt-0.5 truncate text-[11px] text-slate-500">{item.preview}</p>
-                  </div>
-                  <span className="shrink-0 text-[10px] text-slate-400">{item.receivedAt}</span>
-                </button>
-              ))}
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -774,41 +1005,98 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
           {showQuickLinks && (
             <div className="space-y-2 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3 text-xs">
               <p className="text-[11px] font-bold text-indigo-950">
-                Zaznacz linki do wplecenia w odpowiedź:
+                Zaznacz swoje linki (synchronizowane w chmurze) do wplecenia w odpowiedź:
               </p>
-              <div className="space-y-1">
-                {quickLinks.map((lnk) => {
-                  const checked = selectedLinkIds.includes(lnk.id);
-                  return (
-                    <div key={lnk.id} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2.5 py-1.5 border border-slate-200/70">
-                      <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-800 cursor-pointer truncate">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() =>
-                            setSelectedLinkIds((prev) =>
-                              checked ? prev.filter((id) => id !== lnk.id) : [...prev, lnk.id]
-                            )
-                          }
-                          className="rounded border-slate-300 text-indigo-600"
-                        />
-                        <span className="truncate">{lnk.label}</span>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = quickLinks.filter((q) => q.id !== lnk.id);
-                          setQuickLinks(next);
-                          localStorage.setItem(QUICK_LINKS_KEY, JSON.stringify(next));
-                        }}
-                        className="text-slate-400 hover:text-rose-600"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+              {quickLinks.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-indigo-200 bg-white/80 px-3 py-2 text-[11px] text-slate-500">
+                  Brak zapisanych linków. Dodaj poniżej adres swojego katalogu PDF, cennika lub kalendarza spotkań.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {quickLinks.map((lnk) => {
+                    const checked = selectedLinkIds.includes(lnk.id);
+                    const isEditingThis = editingLinkId === lnk.id;
+                    return (
+                      <div key={lnk.id} className="rounded-lg bg-white px-2.5 py-1.5 border border-slate-200/70">
+                        {isEditingThis ? (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={editLinkLabel}
+                              onChange={(e) => setEditLinkLabel(e.target.value)}
+                              className="flex-1 min-w-[90px] rounded border border-indigo-300 px-2 py-0.5 text-[11px]"
+                            />
+                            <input
+                              type="url"
+                              value={editLinkUrl}
+                              onChange={(e) => setEditLinkUrl(e.target.value)}
+                              className="flex-1 min-w-[120px] rounded border border-indigo-300 px-2 py-0.5 text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleSaveEditedLink}
+                              className="rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white"
+                            >
+                              Zapisz
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingLinkId(null)}
+                              className="rounded px-1.5 py-0.5 text-[10px] text-slate-500"
+                            >
+                              Anuluj
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-800 cursor-pointer truncate">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  setSelectedLinkIds((prev) =>
+                                    checked ? prev.filter((id) => id !== lnk.id) : [...prev, lnk.id]
+                                  )
+                                }
+                                className="rounded border-slate-300 text-indigo-600"
+                              />
+                              <span className="truncate">{lnk.label}</span>
+                              <span className="hidden sm:inline truncate text-[10px] font-normal text-slate-400">
+                                ({lnk.url})
+                              </span>
+                            </label>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingLinkId(lnk.id);
+                                  setEditLinkLabel(lnk.label);
+                                  setEditLinkUrl(lnk.url);
+                                }}
+                                className="rounded p-1 text-slate-400 hover:text-indigo-600"
+                                title="Edytuj link"
+                              >
+                                <Edit3 className="h-3 w-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  persistQuickLinks(quickLinks.filter((q) => q.id !== lnk.id));
+                                  setSelectedLinkIds((prev) => prev.filter((id) => id !== lnk.id));
+                                }}
+                                className="rounded p-1 text-slate-400 hover:text-rose-600"
+                                title="Usuń link"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div className="grid grid-cols-5 gap-1.5 pt-1">
                 <input
                   type="text"
@@ -916,22 +1204,53 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             </div>
           )}
 
-          {/* Primary Action Button */}
-          <button
-            type="button"
-            disabled={loading || !clientMessage.trim()}
-            onClick={() => void handleGenerate()}
-            className="shimmer-bar flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-indigo-700 px-5 py-3.5 text-xs font-bold text-white shadow-md shadow-indigo-950/15 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-indigo-600/25 disabled:translate-y-0 disabled:opacity-50"
-          >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin text-indigo-300" />
-            ) : (
-              <Sparkles className="h-4 w-4 text-indigo-300" />
-            )}
-            {loading
-              ? 'Przygotowuję odpowiedź na podstawie Bazy Wiedzy i sieci...'
-              : 'Generuj odpowiedź dla klienta'}
-          </button>
+          {/* Primary Action + Follow-up Po Ciszy */}
+          <div className="space-y-2">
+            <button
+              type="button"
+              disabled={loading || !clientMessage.trim()}
+              onClick={() => void handleGenerate()}
+              className="shimmer-bar flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-indigo-700 px-5 py-3.5 text-xs font-bold text-white shadow-md shadow-indigo-950/15 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-indigo-600/25 disabled:translate-y-0 disabled:opacity-50"
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin text-indigo-300" />
+              ) : (
+                <Sparkles className="h-4 w-4 text-indigo-300" />
+              )}
+              {loading
+                ? 'Przygotowuję odpowiedź na podstawie Bazy Wiedzy i sieci...'
+                : 'Generuj odpowiedź dla klienta'}
+            </button>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/50 px-3 py-2">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-900">
+                <Clock className="h-3.5 w-3.5 text-amber-600" />
+                Follow-up po ciszy:
+              </span>
+              <div className="flex gap-1.5">
+                {[3, 7].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    disabled={loading || !clientMessage.trim()}
+                    onClick={() =>
+                      void handleGenerate(
+                        clientMessage,
+                        advisorNotes,
+                        replyLanguage,
+                        'concise',
+                        channel,
+                        days
+                      )
+                    }
+                    className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-40"
+                  >
+                    Po {days} dniach ({channel === 'sms' ? 'SMS/WA' : 'E-mail'})
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1343,14 +1662,33 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     onClick={() =>
                       void handleGenerate(
                         clientMessage,
-                        'Napisz krótki, uprzejmy mail przypominający (Follow-up po 3 dniach braku odpowiedzi ze strony klienta), nawiązując do poprzedniego zapytania i proponując 10-minutową rozmowę.',
+                        advisorNotes,
                         replyLanguage,
-                        'concise'
+                        'concise',
+                        channel,
+                        3
                       )
                     }
                     className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100"
                   >
-                    Napisz Follow-up (po 3 dniach)
+                    Follow-up (cisza 3 dni)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() =>
+                      void handleGenerate(
+                        clientMessage,
+                        advisorNotes,
+                        replyLanguage,
+                        'concise',
+                        channel,
+                        7
+                      )
+                    }
+                    className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100"
+                  >
+                    Follow-up (cisza 7 dni)
                   </button>
                   <button
                     type="button"

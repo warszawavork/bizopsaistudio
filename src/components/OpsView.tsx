@@ -88,44 +88,67 @@ export const OpsView: React.FC<OpsViewProps> = ({
 
   return (
     <div className="space-y-5">
-      {/* KPI Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
-            <span>Wywołania AI & Automatyzacji</span>
-            <Activity className="h-4 w-4 text-indigo-600" />
+      {/* Executive Studio Pro Ops Header */}
+      <div className="relative overflow-hidden rounded-3xl border border-slate-800/80 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-xl">
+        <div className="pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full bg-cyan-500/15 blur-3xl" />
+        <div className="relative flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-cyan-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-200">
+              <Activity className="h-3 w-3" />
+              Studio Pro • Telemetria, Make/n8n & Audit Trail
+            </div>
+            <h2 className="text-xl font-extrabold tracking-tight">
+              Centrum Operacyjne Automatyzacji i Kosztów AI
+            </h2>
+            <p className="text-xs text-slate-300">
+              Monitoruj wydajność zapytań, konfiguruj mostki webhooków Make/n8n/Zapier i przeglądaj log audytu systemu.
+            </p>
           </div>
-          <p className="mt-2 text-2xl font-bold text-slate-900">{logs.length}</p>
-          <p className="mt-1 text-[11px] text-emerald-600 font-medium">
-            {logs.filter((l) => l.status === 'success').length} zakończonych sukcesem
-          </p>
+          <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/30 bg-emerald-500/15 px-4 py-2 text-xs font-bold text-emerald-200">
+            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+            Neon Postgres + Gemini Live
+          </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
-            <span>Średni czas odpowiedzi</span>
-            <Clock className="h-4 w-4 text-sky-600" />
+        {/* KPI Cards */}
+        <div className="relative mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+              <span>Wywołania AI & Webhooki</span>
+              <Activity className="h-4 w-4 text-indigo-300" />
+            </div>
+            <p className="mt-2 text-2xl font-extrabold text-white">{logs.length}</p>
+            <p className="mt-1 text-[11px] text-emerald-300 font-semibold">
+              {logs.filter((l) => l.status === 'success').length} zakończonych sukcesem
+            </p>
           </div>
-          <p className="mt-2 text-2xl font-bold text-slate-900">{avgLatency} ms</p>
-          <p className="mt-1 text-[11px] text-slate-500">Silnik: Gemini 3.8 Flash</p>
-        </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
-            <span>Zużycie tokenów (sesja)</span>
-            <Cpu className="h-4 w-4 text-amber-600" />
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+              <span>Średni czas odpowiedzi</span>
+              <Clock className="h-4 w-4 text-sky-300" />
+            </div>
+            <p className="mt-2 text-2xl font-extrabold text-white">{avgLatency} ms</p>
+            <p className="mt-1 text-[11px] text-slate-300">Silnik: Gemini 3.8 Flash</p>
           </div>
-          <p className="mt-2 text-2xl font-bold text-slate-900">{totalTokens.toLocaleString('pl-PL')}</p>
-          <p className="mt-1 text-[11px] text-slate-500">Okno modelu: 1 000 000 tok.</p>
-        </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
-            <span>Szacowany koszt (Free Tier)</span>
-            <Coins className="h-4 w-4 text-emerald-600" />
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+              <span>Zużycie tokenów (sesja)</span>
+              <Cpu className="h-4 w-4 text-amber-300" />
+            </div>
+            <p className="mt-2 text-2xl font-extrabold text-white">{totalTokens.toLocaleString('pl-PL')}</p>
+            <p className="mt-1 text-[11px] text-slate-300">Okno modelu: 1 000 000 tok.</p>
           </div>
-          <p className="mt-2 text-2xl font-bold text-emerald-700">$0.00</p>
-          <p className="mt-1 text-[11px] text-slate-500">Darmowy plan Google AI Studio</p>
+
+          <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-xs font-medium text-emerald-200">
+              <span>Szacowany koszt API</span>
+              <Coins className="h-4 w-4 text-emerald-300" />
+            </div>
+            <p className="mt-2 text-2xl font-extrabold text-emerald-200">$0.00</p>
+            <p className="mt-1 text-[11px] text-emerald-300/80">Darmowy plan Google AI Studio</p>
+          </div>
         </div>
       </div>
 

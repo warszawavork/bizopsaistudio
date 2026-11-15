@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Calculator, CheckCircle2, FileDown, Loader2, X } from 'lucide-react';
 import type { CrmDeal } from '../types';
 import { exportOfferToPdf } from '../utils/pdfExport';
@@ -16,18 +16,27 @@ export const QuickQuoteModal: React.FC<QuickQuoteModalProps> = ({
   onClose,
   onDownloaded,
 }) => {
-  if (!deal) return null;
-
   const [quoteNumber, setQuoteNumber] = useState(
-    `OF-${new Date().getFullYear()}-11-${Math.floor(100 + Math.random() * 900)}`
+    () => `OF-${new Date().getFullYear()}-11-${Math.floor(100 + Math.random() * 900)}`
   );
-  const [netPln, setNetPln] = useState(String(deal.valuePln || 250000));
+  const [netPln, setNetPln] = useState(String(deal?.valuePln || 250000));
   const [discountPercent, setDiscountPercent] = useState(0);
   const [vatRate, setVatRate] = useState<8 | 23>(
-    deal.client.toLowerCase().includes('sp. z o.o') ? 23 : 8
+    deal?.client.toLowerCase().includes('sp. z o.o') ? 23 : 8
   );
-  const [notes, setNotes] = useState(deal.notes || '');
+  const [notes, setNotes] = useState(deal?.notes || '');
   const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    if (!deal) return;
+    setQuoteNumber(`OF-${new Date().getFullYear()}-11-${Math.floor(100 + Math.random() * 900)}`);
+    setNetPln(String(deal.valuePln || 250000));
+    setDiscountPercent(0);
+    setVatRate(deal.client.toLowerCase().includes('sp. z o.o') ? 23 : 8);
+    setNotes(deal.notes || '');
+  }, [deal?.id]);
+
+  if (!deal) return null;
 
   const numericNet = Number(netPln) || 0;
   const discountedNet = Math.round(numericNet * (1 - discountPercent / 100));

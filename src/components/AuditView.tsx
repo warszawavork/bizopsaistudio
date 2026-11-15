@@ -17,7 +17,9 @@ import {
   Mic,
   MicOff,
   Play,
+  Printer,
   Sparkles,
+  Upload,
   Webhook,
   XCircle,
 } from 'lucide-react';
@@ -32,8 +34,9 @@ import type {
   MascotMood,
 } from '../types';
 import { fileToBase64, runDocumentAudit, runDocumentComparison } from '../utils/apiClient';
-import { extractTextFromDocx } from '../utils/docxReader';
-import { exportAuditToPdf } from '../utils/pdfExport';
+import { readDocumentForStudio } from '../utils/documentReader';
+import { escapeHtml } from '../utils/emailExport';
+import { exportAuditToPdf, exportComparisonToPdf, printCleanReportHtml } from '../utils/pdfExport';
 
 interface AuditViewProps {
   preset: IndustryPreset;
@@ -92,13 +95,17 @@ export const AuditView: React.FC<AuditViewProps> = ({
   autoSendOnHighRisk,
 }) => {
   const [auditMode, setAuditMode] = useState<'single' | 'compare'>('single');
+  const [docAName, setDocAName] = useState('Dokument A (v1 / Nasza wersja)');
+  const [docBName, setDocBName] = useState('Dokument B (v2 / Rewizja klienta)');
   const [docAText, setDocAText] = useState('');
   const [docBText, setDocBText] = useState('');
   const [comparing, setComparing] = useState(false);
+  const [exportingComparePdf, setExportingComparePdf] = useState(false);
   const [compareResult, setCompareResult] = useState<DocComparisonResult | null>(null);
   const [copiedGaps, setCopiedGaps] = useState(false);
 
   const [docText, setDocText] = useState('');
+  const [readingDocInfo, setReadingDocInfo] = useState<string | null>(null);
   const [uploadedFile, setUploadedFile] = useState<{
     name: string;
     mimeType: string;
@@ -114,6 +121,8 @@ export const AuditView: React.FC<AuditViewProps> = ({
   const [copiedReply, setCopiedReply] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const compareFileARef = useRef<HTMLInputElement>(null);
+  const compareFileBRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
 
   const handleToggleVoiceDictation = () => {
@@ -166,49 +175,85 @@ export const AuditView: React.FC<AuditViewProps> = ({
   const handleFileChange = async (file: File | undefined) => {
     if (!file) return;
     setError(null);
-    if (file.size > 4 * 1024 * 1024) {
-      setError('Maksymalny rozmiar pliku w wersji demo to 4 MB.');
+    setReadingDocInfo(null);
+
+    if (file.type.startsWith('image/')) {
+      if (file.size > 4 * 1024 * 1024) {
+        setError('Maksymalny rozmiar pojedynczego zdjęcia to 4 MB.');
+        return;
+      }
+      const base64 = await fileToBase64(file);
+      setUploadedFile({
+        name: file.name,
+        mimeType: file.type || 'image/jpeg',
+        base64,
+        sizeKb: Math.max(1, Math.round(file.size / 1024)),
+      });
       return;
     }
-    if (file.name.toLowerCase().endsWith('.docx')) {
-      try {
-        const content = await extractTextFromDocx(file);
-        setDocText(content);
+
+    try {
+      setReadingDocInfo(`Wczytuję „${file.name}”...`);
+      const parsed = await readDocumentForStudio(file, (label) => setReadingDocInfo(label));
+
+      if (parsed.kind === 'pdf_scan' && parsed.scannedPages?.length) {
+        const useRawPdf = file.size <= 3.6 * 1024 * 1024;
+        const base64 = useRawPdf ? await fileToBase64(file) : parsed.scannedPages[0].base64;
+        const mimeType = useRawPdf ? 'application/pdf' : parsed.scannedPages[0].mimeType;
+        if (parsed.text.trim()) {
+          setDocText(parsed.text);
+        }
+        setUploadedFile({
+          name: file.name,
+          mimeType,
+          base64,
+          sizeKb: Math.max(1, Math.round(file.size / 1024)),
+        });
+        setReadingDocInfo(
+          `Skan PDF (${parsed.pageCount ?? 1} str.${parsed.dimensionsSummary ? `, ${parsed.dimensionsSummary}` : ''})`
+        );
+      } else {
+        setDocText(parsed.text);
         setUploadedFile({
           name: file.name,
           mimeType: 'text/plain',
           base64: '',
           sizeKb: Math.max(1, Math.round(file.size / 1024)),
         });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Nie udało się odczytać pliku Word (.docx).');
+        setReadingDocInfo(
+          `${parsed.pageCount ? `${parsed.pageCount} str. • ` : ''}${parsed.dimensionsSummary ? `${parsed.dimensionsSummary} • ` : ''}${parsed.charCount.toLocaleString('pl-PL')} znaków`
+        );
       }
-      return;
+      onMascotUpdate('happy', `Wczytałem dokument „${file.name}”!`);
+    } catch (err) {
+      setReadingDocInfo(null);
+      setError(err instanceof Error ? err.message : 'Nie udało się odczytać dokumentu.');
     }
-    if (
-      file.type === 'text/plain' ||
-      file.name.endsWith('.txt') ||
-      file.name.endsWith('.md') ||
-      file.name.endsWith('.csv')
-    ) {
-      const content = await file.text();
-      setDocText(content);
-      setUploadedFile({
-        name: file.name,
-        mimeType: 'text/plain',
-        base64: '',
-        sizeKb: Math.max(1, Math.round(file.size / 1024)),
-      });
-      return;
-    }
+  };
 
-    const base64 = await fileToBase64(file);
-    setUploadedFile({
-      name: file.name,
-      mimeType: file.type || 'application/pdf',
-      base64,
-      sizeKb: Math.max(1, Math.round(file.size / 1024)),
-    });
+  const loadCompareFile = async (file: File | undefined, side: 'A' | 'B') => {
+    if (!file) return;
+    setError(null);
+    try {
+      const parsed = await readDocumentForStudio(file);
+      if (!parsed.text.trim()) {
+        setError(
+          `Plik „${file.name}” wygląda na skan graficzny bez warstwy tekstu. Przepuść go najpierw przez Audyt pojedynczy lub wklej treść ręcznie.`
+        );
+        return;
+      }
+      const dimsLabel = parsed.dimensionsSummary ? ` [${parsed.dimensionsSummary}]` : '';
+      if (side === 'A') {
+        setDocAName(`${file.name}${dimsLabel}`);
+        setDocAText(parsed.text);
+      } else {
+        setDocBName(`${file.name}${dimsLabel}`);
+        setDocBText(parsed.text);
+      }
+      onMascotUpdate('happy', `Wczytano plik „${file.name}” jako Dokument ${side}!`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Nie udało się odczytać pliku do Dokumentu ${side}.`);
+    }
   };
 
   const executeAudit = async (overrideText?: string, overrideName?: string) => {
@@ -383,10 +428,10 @@ export const AuditView: React.FC<AuditViewProps> = ({
         companyName: preset.name,
         language,
         knowledgeTiles: tiles,
-        docAName: 'Dokument A (Baza / Nasza wersja)',
-        docAText,
-        docBName: 'Dokument B (Wersja klienta / v2)',
-        docBText,
+        docAName,
+        docAText: docAText.slice(0, 60000),
+        docBName,
+        docBText: docBText.slice(0, 60000),
       });
       setCompareResult(res);
     } catch (err) {
@@ -394,6 +439,41 @@ export const AuditView: React.FC<AuditViewProps> = ({
     } finally {
       setComparing(false);
     }
+  };
+
+  const handleExportComparePdf = async () => {
+    if (!compareResult || exportingComparePdf) return;
+    setExportingComparePdf(true);
+    try {
+      await exportComparisonToPdf({
+        comparison: compareResult,
+        docAName,
+        docBName,
+        companyName: preset.name,
+      });
+    } finally {
+      setExportingComparePdf(false);
+    }
+  };
+
+  const handlePrintCompareReport = () => {
+    if (!compareResult) return;
+    const rowsHtml = compareResult.differences
+      .map(
+        (d) =>
+          `<tr><td><strong>${escapeHtml(d.topic)}</strong><br/><small>${escapeHtml(d.impact.toUpperCase())}</small></td><td>${escapeHtml(d.docA)}</td><td>${escapeHtml(d.docB)}</td></tr>`
+      )
+      .join('');
+    const risksHtml =
+      compareResult.hiddenRisks.length > 0
+        ? `<h3>Ukryte ryzyka</h3><ul>${compareResult.hiddenRisks.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`
+        : '';
+    printCleanReportHtml({
+      title: `Porównanie dokumentów: ${docAName} vs ${docBName}`,
+      subtitle: `${preset.name} • Ryzyko zmian: ${compareResult.riskLevel}`,
+      bodyMarkdownOrHtml: `<p><strong>Werdykt:</strong> ${escapeHtml(compareResult.overallVerdict)}</p><p><strong>Rekomendacja:</strong> ${escapeHtml(compareResult.recommendedAction)}</p><table><thead><tr><th>Obszar / Parametr</th><th>Dokument A (${escapeHtml(docAName)})</th><th>Dokument B (${escapeHtml(docBName)})</th></tr></thead><tbody>${rowsHtml}</tbody></table>${risksHtml}`,
+      isPreformattedHtml: true,
+    });
   };
 
   const voiceSample = VOICE_NOTE_PRESETS[preset.id] || VOICE_NOTE_PRESETS.norvil;
@@ -433,33 +513,81 @@ export const AuditView: React.FC<AuditViewProps> = ({
           <div className="space-y-4 lg:col-span-5">
             <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-6 space-y-4">
               <div>
-                <h3 className="text-sm font-bold text-slate-900">1. Wklej dwa dokumenty do porównania</h3>
+                <h3 className="text-sm font-bold text-slate-900">1. Wgraj lub wklej dwa dokumenty (v1 vs v2)</h3>
                 <p className="text-xs text-slate-500">
-                  AI wychwyci różnice w cenach, metrażach, stawkach VAT i ukrytych zapisach.
+                  Wgraj PDF (dowolne wymiary), DOCX albo TXT — AI wychwyci różnice w cenach, metrażach, VAT i ukrytych zapisach.
                 </p>
               </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-700">
-                  Dokument A (np. nasza oferta / umowa v1)
-                </label>
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  void loadCompareFile(e.dataTransfer.files?.[0], 'A');
+                }}
+                className="space-y-1.5 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-slate-700 truncate">
+                    Dokument A: <span className="text-indigo-700">{docAName}</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => compareFileARef.current?.click()}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:border-indigo-300 hover:text-indigo-700"
+                  >
+                    <Upload className="h-3 w-3" />
+                    Wgraj PDF / DOCX
+                  </button>
+                  <input
+                    ref={compareFileARef}
+                    type="file"
+                    accept=".pdf,.docx,.txt,.md,.csv,.tsv,.json"
+                    onChange={(e) => void loadCompareFile(e.target.files?.[0], 'A')}
+                    className="hidden"
+                  />
+                </div>
                 <textarea
                   rows={5}
                   value={docAText}
                   onChange={(e) => setDocAText(e.target.value)}
-                  placeholder="Wklej treść pierwszego dokumentu..."
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
+                  placeholder="Wklej albo upuść tutaj pierwszy dokument (PDF / DOCX / tekst)..."
+                  className="w-full rounded-xl border border-slate-200 bg-white p-3 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500"
                 />
               </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-700">
-                  Dokument B (np. rewizja klienta / umowa v2)
-                </label>
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  void loadCompareFile(e.dataTransfer.files?.[0], 'B');
+                }}
+                className="space-y-1.5 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-slate-700 truncate">
+                    Dokument B: <span className="text-indigo-700">{docBName}</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => compareFileBRef.current?.click()}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:border-indigo-300 hover:text-indigo-700"
+                  >
+                    <Upload className="h-3 w-3" />
+                    Wgraj PDF / DOCX
+                  </button>
+                  <input
+                    ref={compareFileBRef}
+                    type="file"
+                    accept=".pdf,.docx,.txt,.md,.csv,.tsv,.json"
+                    onChange={(e) => void loadCompareFile(e.target.files?.[0], 'B')}
+                    className="hidden"
+                  />
+                </div>
                 <textarea
                   rows={5}
                   value={docBText}
                   onChange={(e) => setDocBText(e.target.value)}
-                  placeholder="Wklej treść drugiego dokumentu..."
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
+                  placeholder="Wklej albo upuść tutaj drugi dokument (PDF / DOCX / tekst)..."
+                  className="w-full rounded-xl border border-slate-200 bg-white p-3 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500"
                 />
               </div>
               {error && (
@@ -493,7 +621,7 @@ export const AuditView: React.FC<AuditViewProps> = ({
             ) : (
               <div className="space-y-4">
                 <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-6 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <span
                       className={`rounded-lg px-2.5 py-1 text-xs font-bold ${
                         compareResult.riskLevel === 'LOW'
@@ -505,9 +633,32 @@ export const AuditView: React.FC<AuditViewProps> = ({
                     >
                       RYZYKO ZMIAN: {compareResult.riskLevel}
                     </span>
-                    <span className="font-mono text-[11px] text-slate-400">
-                      {compareResult.latencyMs} ms
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-[11px] text-slate-400">
+                        {compareResult.latencyMs} ms
+                      </span>
+                      <button
+                        type="button"
+                        disabled={exportingComparePdf}
+                        onClick={() => void handleExportComparePdf()}
+                        className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        {exportingComparePdf ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <FileDown className="h-3 w-3" />
+                        )}
+                        Eksportuj PDF różnic
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePrintCompareReport}
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Printer className="h-3 w-3" />
+                        Drukuj raport
+                      </button>
+                    </div>
                   </div>
                   <p className="text-sm font-bold text-slate-900">{compareResult.overallVerdict}</p>
                   <p className="text-xs text-indigo-700 font-semibold">
@@ -520,8 +671,8 @@ export const AuditView: React.FC<AuditViewProps> = ({
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
                         <th className="px-4 py-3 font-bold">Obszar / Parametr</th>
-                        <th className="px-4 py-3 font-bold">Dokument A</th>
-                        <th className="px-4 py-3 font-bold">Dokument B</th>
+                        <th className="px-4 py-3 font-bold">{docAName}</th>
+                        <th className="px-4 py-3 font-bold">{docBName}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -634,15 +785,21 @@ export const AuditView: React.FC<AuditViewProps> = ({
                   ? `${uploadedFile.name} (${uploadedFile.sizeKb} KB)`
                   : 'Przeciągnij plik PDF, Word (.docx) lub zdjęcie z budowy'}
               </p>
-              <p className="mt-1 text-[11px] text-slate-400">PDF, DOCX, PNG, JPG, TXT, CSV do 4 MB</p>
+              <p className="mt-1 text-[11px] text-slate-400">PDF (dowolne formaty/str.), DOCX, PNG, JPG, TXT, CSV</p>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.docx,.txt,.md,.csv,image/*"
+                accept=".pdf,.docx,.txt,.md,.csv,.tsv,.json,image/*"
                 onChange={(e) => void handleFileChange(e.target.files?.[0])}
                 className="hidden"
               />
             </div>
+
+            {readingDocInfo && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 px-3 py-2 text-[11px] font-semibold text-indigo-900">
+                Wczytano: {readingDocInfo}
+              </div>
+            )}
 
             {uploadedFile?.base64 && (uploadedFile.mimeType.startsWith('image/') || uploadedFile.mimeType === 'application/pdf') && (
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">

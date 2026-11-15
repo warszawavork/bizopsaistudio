@@ -1,20 +1,110 @@
-import type { ChatMessage, KnowledgeTile } from '../types';
+import type { ChatMessage, KnowledgeTile, WorkspaceDataKey } from '../types';
 
 const DB_NAME = 'bizops_offline_db_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_TILES = 'tiles_store';
 const STORE_QUEUE = 'sync_queue';
 const STORE_CHAT = 'chat_store';
+const STORE_WORKSPACE = 'workspace_store';
 
 export interface SyncQueueItem {
   id: string;
-  type: 'push_tiles' | 'log_ai';
+  type: 'push_tiles' | 'log_ai' | 'save_workspace';
   presetId: string;
   tiles?: KnowledgeTile[];
   deletedIds?: string[];
   authorName?: string;
   logPayload?: Record<string, unknown>;
+  dataKey?: WorkspaceDataKey;
+  payload?: unknown;
   createdAt: number;
+}
+
+export async function idbGetWorkspaceItem<T>(
+  presetId: string,
+  dataKey: WorkspaceDataKey,
+): Promise<{ payload: T; updatedAt: number } | null> {
+  try {
+    const db = await openOfflineDb();
+    if (!db) return null;
+    return await new Promise((resolve) => {
+      const tx = db.transaction(STORE_WORKSPACE, 'readonly');
+      const store = tx.objectStore(STORE_WORKSPACE);
+      const req = store.get(`${presetId}:${dataKey}`);
+      req.onsuccess = () => {
+        const res = req.result as { key: string; payload: T; updatedAt: number } | undefined;
+        resolve(res ? { payload: res.payload, updatedAt: res.updatedAt } : null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function idbSaveWorkspaceItem<T>(
+  presetId: string,
+  dataKey: WorkspaceDataKey,
+  payload: T,
+): Promise<void> {
+  try {
+    const db = await openOfflineDb();
+    if (!db) return;
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(STORE_WORKSPACE, 'readwrite');
+      const store = tx.objectStore(STORE_WORKSPACE);
+      store.put({
+        key: `${presetId}:${dataKey}`,
+        presetId,
+        dataKey,
+        payload,
+        updatedAt: Date.now(),
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Non-blocking fallback
+  }
+}
+
+export async function idbEnqueueWorkspaceSave(
+  presetId: string,
+  dataKey: WorkspaceDataKey,
+  payload: unknown,
+  authorName?: string,
+): Promise<number> {
+  try {
+    const db = await openOfflineDb();
+    if (!db) return 0;
+    const item: SyncQueueItem = {
+      id: `ws_${presetId}_${dataKey}`,
+      type: 'save_workspace',
+      presetId,
+      dataKey,
+      payload,
+      authorName,
+      createdAt: Date.now(),
+    };
+    return await new Promise<number>((resolve) => {
+      const tx = db.transaction(STORE_QUEUE, 'readwrite');
+      const store = tx.objectStore(STORE_QUEUE);
+      store.put(item);
+      tx.oncomplete = () => {
+        try {
+          const countTx = db.transaction(STORE_QUEUE, 'readonly');
+          const countReq = countTx.objectStore(STORE_QUEUE).count();
+          countReq.onsuccess = () => resolve(countReq.result ?? 0);
+          countReq.onerror = () => resolve(0);
+        } catch {
+          resolve(0);
+        }
+      };
+      tx.onerror = () => resolve(0);
+    });
+  } catch {
+    return 0;
+  }
 }
 
 interface StoredTilesRecord {
@@ -50,6 +140,9 @@ function openOfflineDb(): Promise<IDBDatabase | null> {
         }
         if (!db.objectStoreNames.contains(STORE_CHAT)) {
           db.createObjectStore(STORE_CHAT, { keyPath: 'presetId' });
+        }
+        if (!db.objectStoreNames.contains(STORE_WORKSPACE)) {
+          db.createObjectStore(STORE_WORKSPACE, { keyPath: 'key' });
         }
       };
       req.onsuccess = () => resolve(req.result);

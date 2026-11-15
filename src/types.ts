@@ -313,12 +313,24 @@ export interface ObjectionPlaybookItem {
   script: string;
 }
 
+export interface ReplyHistoryItem {
+  id: string;
+  client: string;
+  subject: string;
+  createdAt: string;
+  reply: SalesReplyResult;
+}
+
 export interface InboxFeedItem {
   id: string;
-  source: 'gmail' | 'whatsapp' | 'meta';
+  source: 'gmail' | 'whatsapp' | 'meta' | 'tally' | 'webhook';
   senderName: string;
   senderContact: string;
   preview: string;
   fullText: string;
   receivedAt: string;
+  handled?: boolean;
+  handledBy?: string;
 }
+
+export type WorkspaceDataKey = 'deals' | 'quick_links' | 'objections' | 'reply_history';

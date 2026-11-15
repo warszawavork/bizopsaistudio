@@ -1,14 +1,18 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
+  BookOpen,
   BookPlus,
   BrainCircuit,
   Check,
+  CheckSquare,
   Download,
   Edit3,
   Eye,
   EyeOff,
   FileUp,
   GraduationCap,
+  Layers,
   Loader2,
   MessageSquare,
   Plus,
@@ -16,8 +20,11 @@ import {
   Search,
   ShieldAlert,
   Sparkles,
+  Square,
+  StopCircle,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react';
 import type {
   AppLanguage,
@@ -34,7 +41,77 @@ import {
   runKnowledgeConsistencyCheck,
   runSmartIngest,
 } from '../utils/apiClient';
-import { extractTextFromDocx } from '../utils/docxReader';
+import {
+  chunkBookOrLargeText,
+  readDocumentForStudio,
+  type ScannedPdfPageImage,
+} from '../utils/documentReader';
+
+interface StagedKnowledgeTile {
+  title: string;
+  category: string;
+  visibility: 'public' | 'internal';
+  priority?: 'standard' | 'critical';
+  content: string;
+}
+
+function normalizeWords(text: string): Set<string> {
+  const words = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3);
+  return new Set(words);
+}
+
+function findSimilarTiles(
+  candidateTitle: string,
+  candidateContent: string,
+  existing: KnowledgeTile[],
+  excludeId?: string | null
+): KnowledgeTile[] {
+  const cleanTitle = candidateTitle.trim().toLowerCase();
+  if (!cleanTitle) return [];
+  const titleWords = normalizeWords(cleanTitle);
+  const contentWords = normalizeWords(candidateContent.slice(0, 320));
+
+  const matches: Array<{ tile: KnowledgeTile; score: number }> = [];
+  for (const tile of existing) {
+    if (excludeId && tile.id === excludeId) continue;
+    const tLow = tile.title.trim().toLowerCase();
+    if (tLow === cleanTitle || (cleanTitle.length >= 6 && (tLow.includes(cleanTitle) || cleanTitle.includes(tLow)))) {
+      matches.push({ tile, score: 1 });
+      continue;
+    }
+    const existingTitleWords = normalizeWords(tLow);
+    if (titleWords.size > 0 && existingTitleWords.size > 0) {
+      let common = 0;
+      for (const w of titleWords) {
+        if (existingTitleWords.has(w)) common++;
+      }
+      const jaccard = common / Math.max(1, titleWords.size + existingTitleWords.size - common);
+      if (jaccard >= 0.45) {
+        matches.push({ tile, score: jaccard });
+        continue;
+      }
+    }
+    if (contentWords.size >= 6) {
+      const existingContentWords = normalizeWords(tile.content.slice(0, 320));
+      let commonC = 0;
+      for (const w of contentWords) {
+        if (existingContentWords.has(w)) commonC++;
+      }
+      const jaccardC = commonC / Math.max(1, contentWords.size + existingContentWords.size - commonC);
+      if (jaccardC >= 0.55) {
+        matches.push({ tile, score: jaccardC * 0.8 });
+      }
+    }
+  }
+  return matches
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((m) => m.tile);
+}
 
 interface KnowledgeViewProps {
   preset: IndustryPreset;
@@ -117,24 +194,31 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
   const [autoLearning, setAutoLearning] = useState(false);
   const [autoLearnSuccessMsg, setAutoLearnSuccessMsg] = useState<string | null>(null);
 
-  // AI Smart Ingest state
+  // AI Smart Ingest & Book / Large PDF state
   const [ingestText, setIngestText] = useState('');
   const [ingestUrl, setIngestUrl] = useState('');
   const [ingestFile, setIngestFile] = useState<{ name: string; mimeType: string; base64: string } | null>(null);
+  const [bookMeta, setBookMeta] = useState<{
+    fileName: string;
+    kind: 'pdf_text' | 'pdf_scan' | 'docx' | 'text';
+    pageCount?: number;
+    dimensionsSummary?: string;
+    charCount: number;
+    scannedPages?: ScannedPdfPageImage[];
+  } | null>(null);
+  const [bookMode, setBookMode] = useState<'auto' | 'book' | 'standard'>('auto');
+  const [readingProgress, setReadingProgress] = useState<{ label: string; percent: number } | null>(null);
+  const [ingestProgress, setIngestProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [ingesting, setIngesting] = useState(false);
   const [checkingConsistency, setCheckingConsistency] = useState(false);
   const [consistencyReport, setConsistencyReport] = useState<KnowledgeConsistencyResult | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
-  const [stagedTiles, setStagedTiles] = useState<
-    Array<{
-      title: string;
-      category: string;
-      visibility: 'public' | 'internal';
-      priority?: 'standard' | 'critical';
-      content: string;
-    }>
-  >([]);
+  const [stagedTiles, setStagedTiles] = useState<StagedKnowledgeTile[]>([]);
   const [ingestSummary, setIngestSummary] = useState<string | null>(null);
+  const [selectedTileIds, setSelectedTileIds] = useState<Set<string>>(new Set());
+  const [highlightedTitles, setHighlightedTitles] = useState<string[]>([]);
+  const [bulkCategory, setBulkCategory] = useState('Oferta');
+  const ingestAbortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importJsonRef = useRef<HTMLInputElement>(null);
 
@@ -145,6 +229,11 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
   const [visibility, setVisibility] = useState<'public' | 'internal'>('public');
   const [priority, setPriority] = useState<'standard' | 'critical'>('standard');
   const [content, setContent] = useState('');
+
+  const manualSimilarTiles = useMemo(() => {
+    if (title.trim().length < 4) return [];
+    return findSimilarTiles(title, content, tiles, editingId);
+  }, [title, content, tiles, editingId]);
 
   const activeTiles = tiles.filter((t) => t.enabled);
   const estimatedActiveTokens = activeTiles.reduce(
@@ -157,34 +246,60 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     setIngestError(null);
-    if (file.name.toLowerCase().endsWith('.docx')) {
-      try {
-        const docxText = await extractTextFromDocx(file);
-        setIngestText((prev) => (prev ? `${prev}\n\n${docxText}` : docxText));
-        setIngestFile(null);
-      } catch (err) {
-        setIngestError(err instanceof Error ? err.message : 'Nie udało się odczytać pliku Word (.docx).');
-      }
+    e.target.value = '';
+
+    if (file.type.startsWith('image/')) {
+      const base64 = await fileToBase64(file);
+      setBookMeta(null);
+      setIngestFile({
+        name: file.name,
+        mimeType: file.type || 'image/jpeg',
+        base64,
+      });
       return;
     }
-    if (
-      file.type === 'text/plain' ||
-      file.name.endsWith('.md') ||
-      file.name.endsWith('.csv') ||
-      file.name.endsWith('.tsv') ||
-      file.name.endsWith('.txt')
-    ) {
-      const txt = await file.text();
-      setIngestText((prev) => (prev ? `${prev}\n\n${txt}` : txt));
+
+    setReadingProgress({ label: `Otwieram „${file.name}” i sprawdzam wymiary...`, percent: 8 });
+    try {
+      const parsed = await readDocumentForStudio(file, (label, percent) => {
+        setReadingProgress({ label, percent });
+      });
       setIngestFile(null);
-      return;
+      setBookMeta({
+        fileName: parsed.fileName,
+        kind: parsed.kind,
+        pageCount: parsed.pageCount,
+        dimensionsSummary: parsed.dimensionsSummary,
+        charCount: parsed.charCount,
+        scannedPages: parsed.scannedPages,
+      });
+
+      if (parsed.text.trim()) {
+        setIngestText((prev) =>
+          prev.trim() ? `${prev}\n\n${parsed.text}` : parsed.text
+        );
+      }
+
+      if (parsed.charCount > 15000 || (parsed.pageCount ?? 0) > 8 || parsed.kind === 'pdf_scan') {
+        setBookMode('book');
+      } else {
+        setBookMode('auto');
+      }
+
+      const dimsInfo = parsed.dimensionsSummary ? ` • Wymiary: ${parsed.dimensionsSummary}` : '';
+      const scanInfo =
+        parsed.kind === 'pdf_scan' && parsed.scannedPages
+          ? ` (wykryto skan — przygotowano ${parsed.scannedPages.length} stron adaptacyjnie)`
+          : '';
+      onMascotUpdate(
+        'happy',
+        `Wczytałem „${parsed.fileName}”${dimsInfo}${scanInfo}. Kliknij „Przetwórz przez AI”, aby ustrukturyzować wiedzę.`
+      );
+    } catch (err) {
+      setIngestError(err instanceof Error ? err.message : 'Nie udało się odczytać pliku.');
+    } finally {
+      setReadingProgress(null);
     }
-    const base64 = await fileToBase64(file);
-    setIngestFile({
-      name: file.name,
-      mimeType: file.type || 'application/pdf',
-      base64,
-    });
   };
 
   const handleRunConsistencyCheck = async () => {
@@ -204,43 +319,194 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
     }
   };
 
+  const handleStopIngest = () => {
+    ingestAbortRef.current?.abort();
+  };
+
   const handleRunIngest = async () => {
-    if (!ingestText.trim() && !ingestFile && !ingestUrl.trim()) return;
+    const hasScanPages = Boolean(bookMeta?.kind === 'pdf_scan' && bookMeta.scannedPages?.length);
+    if (!ingestText.trim() && !ingestFile && !ingestUrl.trim() && !hasScanPages) return;
+
+    const controller = new AbortController();
+    ingestAbortRef.current = controller;
     setIngesting(true);
     setIngestError(null);
-    onMascotUpdate('thinking', 'Analizuję materiał i buduję kafelki wiedzy...');
+    setIngestProgress(null);
+    onMascotUpdate('thinking', 'Analizuję materiał, wykrywam strukturę i tworzę kafelki wiedzy...');
+
+    const accumulated: StagedKnowledgeTile[] = [];
+    const seenTitleKeys = new Set<string>(tiles.map((t) => t.title.trim().toLowerCase()));
+    const dynamicExistingTitles = tiles.map((t) => t.title);
+    let totalPrompt = 0;
+    let totalCandidates = 0;
+    let totalTokens = 0;
+    let totalLatency = 0;
+    const notes: string[] = [];
+
+    const pushUniqueTiles = (incoming: StagedKnowledgeTile[]) => {
+      const addedNow: StagedKnowledgeTile[] = [];
+      for (const item of incoming) {
+        const key = item.title.trim().toLowerCase();
+        if (!key) continue;
+        // Pozwól dodać nowe jeśli nie ma identycznego duplikatu w ramach bieżącego importu
+        const alreadyInBatch = accumulated.some((a) => a.title.trim().toLowerCase() === key);
+        if (!alreadyInBatch) {
+          accumulated.push(item);
+          addedNow.push(item);
+          if (!seenTitleKeys.has(key)) {
+            seenTitleKeys.add(key);
+            dynamicExistingTitles.push(item.title);
+          }
+        }
+      }
+      if (addedNow.length > 0) {
+        setStagedTiles([...accumulated]);
+      }
+    };
+
     try {
-      const res = await runSmartIngest({
-        companyName: preset.name,
-        language,
-        fileName: ingestFile?.name || (ingestUrl.trim() || 'Notatki własne'),
-        rawText: ingestText,
-        sourceUrl: ingestUrl.trim() || undefined,
-        fileBase64: ingestFile?.base64,
-        fileMimeType: ingestFile?.mimeType,
-      });
-      setStagedTiles(res.tiles);
-      setIngestSummary(res.summaryNote);
-      onMascotUpdate('happy', `Wyodrębniłem ${res.tiles.length} nowe kafelki wiedzy!`);
-      onLogAiCall({
-        action: 'ingest',
-        latencyMs: res.latencyMs,
-        promptTokens: res.usage.promptTokens,
-        candidatesTokens: res.usage.candidatesTokens,
-        totalTokens: res.usage.totalTokens,
-        status: 'success',
-        summary: `Naucz mnie AI: wygenerowano ${res.tiles.length} kafelki (${ingestFile?.name || ingestUrl.trim() || 'tekst'})`,
-      });
+      const effectiveName = bookMeta?.fileName || ingestFile?.name || ingestUrl.trim() || 'Notatki / Książka';
+
+      if (hasScanPages && bookMeta?.scannedPages?.length) {
+        const pages = bookMeta.scannedPages;
+        const batchSize = 4;
+        const totalBatches = Math.ceil(pages.length / batchSize);
+
+        for (let b = 0; b < totalBatches; b++) {
+          if (controller.signal.aborted) break;
+          const slice = pages.slice(b * batchSize, (b + 1) * batchSize);
+          const rangeLabel = `Strony ${slice[0].pageNum}–${slice[slice.length - 1].pageNum} (${slice[0].dimensionsLabel})`;
+          setIngestProgress({
+            current: b + 1,
+            total: totalBatches,
+            label: `Analizuję skan PDF: ${rangeLabel}...`,
+          });
+
+          const res = await runSmartIngest({
+            companyName: preset.name,
+            language,
+            fileName: effectiveName,
+            rawText: b === 0 && ingestText.trim() ? ingestText.slice(0, 6000) : undefined,
+            ingestMode: 'scan_pages',
+            chunkIndex: b,
+            totalChunks: totalBatches,
+            chapterHint: rangeLabel,
+            existingTileTitles: dynamicExistingTitles.slice(-80),
+            pageImages: slice.map((p) => ({
+              pageNumber: p.pageNum,
+              label: p.dimensionsLabel,
+              base64: p.base64,
+              mimeType: p.mimeType,
+            })),
+            signal: controller.signal,
+          });
+          totalPrompt += res.usage.promptTokens;
+          totalCandidates += res.usage.candidatesTokens;
+          totalTokens += res.usage.totalTokens;
+          totalLatency += res.latencyMs;
+          if (res.summaryNote) notes.push(res.summaryNote);
+          pushUniqueTiles(res.tiles);
+        }
+      } else {
+        const trimmedText = ingestText.trim();
+        const shouldUseBookMode =
+          !ingestFile &&
+          !ingestUrl.trim() &&
+          (bookMode === 'book' || trimmedText.length > 16000);
+
+        if (shouldUseBookMode && trimmedText.length > 0) {
+          const chunks = chunkBookOrLargeText(trimmedText, 16000);
+          for (const ch of chunks) {
+            if (controller.signal.aborted) break;
+            setIngestProgress({
+              current: ch.index + 1,
+              total: ch.total,
+              label: `Strukturyzuję rozdział ${ch.index + 1}/${ch.total}: ${ch.chapterHint}`,
+            });
+
+            const res = await runSmartIngest({
+              companyName: preset.name,
+              language,
+              fileName: effectiveName,
+              rawText: ch.text,
+              ingestMode: 'book',
+              chunkIndex: ch.index,
+              totalChunks: ch.total,
+              chapterHint: ch.chapterHint,
+              existingTileTitles: dynamicExistingTitles.slice(-80),
+              signal: controller.signal,
+            });
+            totalPrompt += res.usage.promptTokens;
+            totalCandidates += res.usage.candidatesTokens;
+            totalTokens += res.usage.totalTokens;
+            totalLatency += res.latencyMs;
+            if (res.summaryNote) notes.push(res.summaryNote);
+            pushUniqueTiles(res.tiles);
+          }
+        } else {
+          setIngestProgress({
+            current: 1,
+            total: 1,
+            label: 'Przetwarzam materiał przez Gemini AI...',
+          });
+          const res = await runSmartIngest({
+            companyName: preset.name,
+            language,
+            fileName: effectiveName,
+            rawText: trimmedText,
+            sourceUrl: ingestUrl.trim() || undefined,
+            fileBase64: ingestFile?.base64,
+            fileMimeType: ingestFile?.mimeType,
+            ingestMode: 'standard',
+            existingTileTitles: dynamicExistingTitles.slice(-60),
+            signal: controller.signal,
+          });
+          totalPrompt += res.usage.promptTokens;
+          totalCandidates += res.usage.candidatesTokens;
+          totalTokens += res.usage.totalTokens;
+          totalLatency += res.latencyMs;
+          if (res.summaryNote) notes.push(res.summaryNote);
+          pushUniqueTiles(res.tiles);
+        }
+      }
+
+      setIngestSummary(
+        notes.length > 1
+          ? `Ustrukturyzowano w ${notes.length} etapach: ${notes[0]} ... (${accumulated.length} kafelków)`
+          : notes[0] || `Wyodrębniono ${accumulated.length} kafelków wiedzy.`
+      );
+      onMascotUpdate('happy', `Gotowe! Ustrukturyzowałem ${accumulated.length} kafelków wiedzy.`);
+      if (totalTokens > 0) {
+        onLogAiCall({
+          action: 'ingest',
+          latencyMs: totalLatency,
+          promptTokens: totalPrompt,
+          candidatesTokens: totalCandidates,
+          totalTokens,
+          status: 'success',
+          summary: `Naucz mnie AI: wygenerowano ${accumulated.length} kafelki (${effectiveName})`,
+        });
+      }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Błąd przetwarzania wiedzy';
-      setIngestError(msg);
-      onMascotUpdate('alert', 'Nie udało się przetworzyć materiału.');
+      if (err instanceof Error && err.name === 'AbortError') {
+        setIngestSummary(
+          `Przerwano na żądanie użytkownika — zachowano ${accumulated.length} wyodrębnionych kafelków do zatwierdzenia.`
+        );
+        onMascotUpdate('happy', `Zatrzymano przetwarzanie — zachowałem ${accumulated.length} dotychczasowych kafelków!`);
+      } else {
+        const msg = err instanceof Error ? err.message : 'Błąd przetwarzania wiedzy';
+        setIngestError(msg);
+        onMascotUpdate('alert', 'Nie udało się przetworzyć materiału.');
+      }
     } finally {
       setIngesting(false);
+      setIngestProgress(null);
+      ingestAbortRef.current = null;
     }
   };
 
   const handleCommitStaged = () => {
+    const nowDate = new Date().toISOString().slice(0, 10);
     const created: KnowledgeTile[] = stagedTiles.map((st, idx) => ({
       id: `custom_${Date.now()}_${idx}`,
       title: st.title,
@@ -249,15 +515,16 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
       priority: st.priority === 'critical' ? 'critical' : 'standard',
       content: st.content,
       enabled: true,
-      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedAt: nowDate,
     }));
     onTilesChange([...created, ...tiles]);
     setStagedTiles([]);
     setIngestSummary(null);
     setIngestText('');
     setIngestFile(null);
+    setBookMeta(null);
     setAutoLearnSuccessMsg(null);
-    onMascotUpdate('happy', 'Nowa wiedza zapisana! Już z niej korzystam w czacie i audycie.');
+    onMascotUpdate('happy', 'Nowa wiedza zapisana! Już z niej korzystam w czacie, odpowiedziach i audycie.');
   };
 
   const handleRunAutoLearn = async () => {
@@ -414,6 +681,12 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
   };
 
   const filteredTiles = tiles.filter((t) => {
+    if (highlightedTitles.length > 0) {
+      const normalized = t.title.trim().toLowerCase();
+      return highlightedTitles.some(
+        (ht) => normalized.includes(ht.trim().toLowerCase()) || ht.trim().toLowerCase().includes(normalized)
+      );
+    }
     const matchesCat = categoryFilter === 'Wszystkie' || t.category === categoryFilter;
     const matchesStatus =
       statusFilter === 'all' ||
@@ -432,6 +705,55 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
     onTilesChange(
       tiles.map((t) => (filteredIds.has(t.id) ? { ...t, enabled } : t))
     );
+  };
+
+  const toggleSelectTile = (id: string) => {
+    setSelectedTileIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllFiltered = () => {
+    if (filteredTiles.length === 0) return;
+    const allSelected = filteredTiles.every((t) => selectedTileIds.has(t.id));
+    if (allSelected) {
+      setSelectedTileIds(new Set());
+    } else {
+      setSelectedTileIds(new Set(filteredTiles.map((t) => t.id)));
+    }
+  };
+
+  const handleBulkSelectedAction = (
+    action: 'enable' | 'disable' | 'delete' | 'category',
+    newCategory?: string
+  ) => {
+    if (selectedTileIds.size === 0) return;
+    if (action === 'delete') {
+      onTilesChange(tiles.filter((t) => !selectedTileIds.has(t.id)));
+      setSelectedTileIds(new Set());
+      return;
+    }
+    onTilesChange(
+      tiles.map((t) => {
+        if (!selectedTileIds.has(t.id)) return t;
+        if (action === 'enable') return { ...t, enabled: true };
+        if (action === 'disable') return { ...t, enabled: false };
+        if (action === 'category' && newCategory) return { ...t, category: newCategory };
+        return t;
+      })
+    );
+    setSelectedTileIds(new Set());
+  };
+
+  const handleJumpToConflict = (affectedTitles: string[]) => {
+    setHighlightedTitles(affectedTitles.length > 0 ? affectedTitles : []);
+    setCategoryFilter('Wszystkie');
+    setStatusFilter('all');
+    setSearch('');
+    document.getElementById('knowledge-tiles-grid')?.scrollIntoView({ behavior: 'smooth' });
   };
 
   return (
@@ -555,15 +877,42 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
           {consistencyReport.conflicts.length > 0 && (
             <div className="space-y-2">
               <p className="text-[11px] font-bold uppercase tracking-wider text-rose-700">
-                Wykryte sprzeczności ({consistencyReport.conflicts.length}):
+                Wykryte sprzeczności ({consistencyReport.conflicts.length}) — kliknij kafelek, aby przejść do edycji:
               </p>
               {consistencyReport.conflicts.map((c, idx) => (
                 <div
                   key={idx}
-                  className="rounded-2xl border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-900"
+                  className="rounded-2xl border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-900 space-y-2"
                 >
-                  <p className="font-bold">{c.title}</p>
-                  <p className="mt-0.5 text-rose-800">{c.detail}</p>
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="font-bold">{c.title}</p>
+                      <p className="mt-0.5 text-rose-800">{c.detail}</p>
+                    </div>
+                    {c.affectedTileTitles?.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => handleJumpToConflict(c.affectedTileTitles)}
+                        className="shrink-0 rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100"
+                      >
+                        Pokaż kafelki ({c.affectedTileTitles.length})
+                      </button>
+                    )}
+                  </div>
+                  {c.affectedTileTitles?.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {c.affectedTileTitles.map((tTitle, ti) => (
+                        <button
+                          key={ti}
+                          type="button"
+                          onClick={() => handleJumpToConflict([tTitle])}
+                          className="rounded-md border border-rose-200 bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-rose-800 hover:border-rose-400 hover:bg-rose-100"
+                        >
+                          {tTitle} →
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -648,15 +997,19 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
               >
                 <FileUp className="mb-2 h-6 w-6 text-indigo-600" />
                 <p className="text-xs font-semibold text-slate-700">
-                  {ingestFile ? ingestFile.name : 'Wgraj PDF, Word (.docx), CSV lub zdjęcie'}
+                  {bookMeta
+                    ? bookMeta.fileName
+                    : ingestFile
+                      ? ingestFile.name
+                      : 'Wgraj książkę PDF (dowolne wymiary), DOCX, TXT lub skan'}
                 </p>
                 <p className="mt-0.5 text-[11px] text-slate-400">
-                  AI samo streści dokument w kafelki
+                  Obsługa dużych PDF (A5–A1, skany) i podział na rozdziały
                 </p>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf,.docx,.txt,.md,.csv,.tsv,image/*"
+                  accept=".pdf,.docx,.txt,.md,.csv,.tsv,.json,image/*"
                   onChange={(e) => void handleIngestFileSelect(e)}
                   className="hidden"
                 />
@@ -666,20 +1019,95 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
                 rows={4}
                 value={ingestText}
                 onChange={(e) => setIngestText(e.target.value)}
-                placeholder="Albo wklej tutaj surowe notatki firmowe, regulamin, cennik lub odpowiedzi z maili — Gemini AI automatycznie uporządkuje je w kafelki wiedzy..."
+                placeholder="Albo wklej tutaj książki, obszerne poradniki, regulamin, cennik lub odpowiedzi z maili — Gemini AI automatycznie podzieli treść na logiczne sekcje i uporządkuje je w kafelki..."
                 className="md:col-span-2 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
-              <span className="text-[11px] font-semibold text-slate-600">Lub pobierz ze strony WWW (URL):</span>
-              <input
-                type="url"
-                value={ingestUrl}
-                onChange={(e) => setIngestUrl(e.target.value)}
-                placeholder="https://twojafirma.pl/oferta-lub-cennik"
-                className="min-w-[240px] flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
-              />
+            {readingProgress && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/80 p-3 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-indigo-900">
+                  <span>{readingProgress.label}</span>
+                  <span>{readingProgress.percent}%</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-indigo-200">
+                  <div
+                    className="h-full rounded-full bg-indigo-600 transition-all"
+                    style={{ width: `${readingProgress.percent}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {bookMeta && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-[11px] text-emerald-900">
+                <div className="flex flex-wrap items-center gap-2">
+                  <BookOpen className="h-4 w-4 text-emerald-600" />
+                  <span className="font-bold">{bookMeta.fileName}</span>
+                  {bookMeta.pageCount && (
+                    <span className="rounded bg-white px-1.5 py-0.5 font-semibold text-slate-700 border border-emerald-200">
+                      {bookMeta.pageCount} str.
+                    </span>
+                  )}
+                  {bookMeta.dimensionsSummary && (
+                    <span className="rounded bg-white px-1.5 py-0.5 font-semibold text-slate-700 border border-emerald-200">
+                      Wymiary: {bookMeta.dimensionsSummary}
+                    </span>
+                  )}
+                  <span className="rounded bg-white px-1.5 py-0.5 font-mono text-slate-600 border border-emerald-200">
+                    {bookMeta.kind === 'pdf_scan'
+                      ? `Skan PDF (${bookMeta.scannedPages?.length ?? 0} str.)`
+                      : `${bookMeta.charCount.toLocaleString('pl-PL')} znaków`}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBookMeta(null);
+                    setIngestText('');
+                    setIngestFile(null);
+                  }}
+                  className="text-slate-500 hover:text-rose-600"
+                  title="Wyczyść wczytany plik"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+              <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
+                <span className="text-[11px] font-semibold text-slate-600">Lub adres WWW (URL):</span>
+                <input
+                  type="url"
+                  value={ingestUrl}
+                  onChange={(e) => setIngestUrl(e.target.value)}
+                  placeholder="https://twojafirma.pl/oferta-lub-cennik"
+                  className="min-w-[200px] flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5 text-[11px]">
+                <Layers className="ml-1.5 h-3.5 w-3.5 text-indigo-600" />
+                {[
+                  { id: 'auto', label: 'Auto' },
+                  { id: 'book', label: 'Książka / Duży PDF' },
+                  { id: 'standard', label: 'Krótki tekst' },
+                ].map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setBookMode(opt.id as 'auto' | 'book' | 'standard')}
+                    className={`rounded-md px-2 py-1 font-semibold transition ${
+                      bookMode === opt.id
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {ingestError && (
@@ -688,15 +1116,51 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
               </div>
             )}
 
+            {ingestProgress && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-indigo-950">
+                    <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                    <span>{ingestProgress.label}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] font-bold text-indigo-700">
+                      Część {ingestProgress.current} / {ingestProgress.total}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleStopIngest}
+                      className="inline-flex items-center gap-1 rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-50"
+                    >
+                      <StopCircle className="h-3.5 w-3.5" />
+                      Przerwij i zachowaj
+                    </button>
+                  </div>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-200">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-indigo-600 to-sky-500 transition-all"
+                    style={{ width: `${Math.round((ingestProgress.current / Math.max(1, ingestProgress.total)) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-end">
               <button
                 type="button"
-                disabled={ingesting || (!ingestText.trim() && !ingestFile && !ingestUrl.trim())}
+                disabled={
+                  ingesting ||
+                  (!ingestText.trim() &&
+                    !ingestFile &&
+                    !ingestUrl.trim() &&
+                    !(bookMeta?.kind === 'pdf_scan' && bookMeta.scannedPages?.length))
+                }
                 onClick={() => void handleRunIngest()}
                 className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-700 disabled:opacity-50"
               >
                 {ingesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                Przetwórz przez AI i przygotuj kafelki
+                Przetwórz przez AI i uporządkuj w kafelki
               </button>
             </div>
 
@@ -705,11 +1169,22 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="text-xs font-bold text-indigo-950">
-                      Podgląd wyodrębnionej wiedzy ({stagedTiles.length} kafelki):
+                      Podgląd uporządkowanej wiedzy ({stagedTiles.length} kafelków):
                     </p>
                     {ingestSummary && <p className="text-[11px] text-indigo-800">{ingestSummary}</p>}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStagedTiles((prev) =>
+                          prev.filter((st) => findSimilarTiles(st.title, st.content, tiles).length === 0)
+                        );
+                      }}
+                      className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-100"
+                    >
+                      Usuń duplikaty istniejących
+                    </button>
                     <button
                       type="button"
                       onClick={() => setStagedTiles([])}
@@ -723,25 +1198,61 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
                       className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
                     >
                       <Check className="h-3.5 w-3.5" />
-                      Zapisz w bazie bota
+                      Zapisz w bazie bota ({stagedTiles.length})
                     </button>
                   </div>
                 </div>
 
                 <div className="grid gap-2.5 sm:grid-cols-2">
-                  {stagedTiles.map((st, i) => (
-                    <div key={i} className="rounded-xl border border-indigo-100 bg-white p-3 text-xs">
-                      <div className="mb-1 flex items-center justify-between gap-2">
-                        <span className="font-bold text-slate-900">{st.title}</span>
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                          {st.category}
-                        </span>
+                  {stagedTiles.map((st, i) => {
+                    const similarExisting = findSimilarTiles(st.title, st.content, tiles);
+                    return (
+                      <div key={i} className="rounded-xl border border-indigo-100 bg-white p-3 text-xs space-y-1.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-bold text-slate-900">{st.title}</span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <select
+                              value={st.category}
+                              onChange={(e) =>
+                                setStagedTiles((prev) =>
+                                  prev.map((item, idx) =>
+                                    idx === i ? { ...item, category: e.target.value } : item
+                                  )
+                                )
+                              }
+                              className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 outline-none"
+                            >
+                              {CATEGORIES.map((c) => (
+                                <option key={c} value={c}>
+                                  {c}
+                                </option>
+                              ))}
+                              {!CATEGORIES.includes(st.category) && (
+                                <option value={st.category}>{st.category}</option>
+                              )}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => setStagedTiles((prev) => prev.filter((_, idx) => idx !== i))}
+                              className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                              title="Usuń ten kafelek z importu"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        {similarExisting.length > 0 && (
+                          <div className="flex items-center gap-1 rounded-md bg-amber-50 border border-amber-200 px-2 py-1 text-[10px] font-semibold text-amber-800">
+                            <AlertTriangle className="h-3 w-3 shrink-0" />
+                            <span>Podobny już istnieje: „{similarExisting[0].title}”</span>
+                          </div>
+                        )}
+                        <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-600">
+                          {st.content}
+                        </p>
                       </div>
-                      <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-600">
-                        {st.content}
-                      </p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -882,6 +1393,24 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
               placeholder="Wpisz dokładne zasady, parametry, ceny lub procedury, którymi bot ma się kierować..."
               className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
             />
+            {manualSimilarTiles.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                  <span>
+                    W bazie istnieje podobny kafelek:{' '}
+                    <strong>„{manualSimilarTiles[0].title}”</strong> ({manualSimilarTiles[0].category}). Zamiast duplikować, możesz go zaktualizować.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleStartEdit(manualSimilarTiles[0])}
+                  className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-100"
+                >
+                  Edytuj istniejący
+                </button>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               {editingId && (
                 <button
@@ -909,7 +1438,23 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
       </div>
 
       {/* Filter & Tiles Grid */}
-      <div className="space-y-3">
+      <div id="knowledge-tiles-grid" className="space-y-3">
+        {highlightedTitles.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-rose-300 bg-rose-50 px-4 py-2.5 text-xs text-rose-900">
+            <span>
+              Pokazuję kafelki powiązane ze sprzecznością:{' '}
+              <strong>{highlightedTitles.join(', ')}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => setHighlightedTitles([])}
+              className="rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100"
+            >
+              Wyczyść filtr konfliktu
+            </button>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="relative flex-1 min-w-[220px] max-w-sm">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
@@ -927,9 +1472,12 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
               <button
                 key={cat}
                 type="button"
-                onClick={() => setCategoryFilter(cat)}
+                onClick={() => {
+                  setHighlightedTitles([]);
+                  setCategoryFilter(cat);
+                }}
                 className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
-                  categoryFilter === cat
+                  categoryFilter === cat && highlightedTitles.length === 0
                     ? 'bg-slate-900 text-white'
                     : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
                 }`}
@@ -952,9 +1500,12 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setStatusFilter(item.id as 'all' | 'critical' | 'internal' | 'disabled')}
+                onClick={() => {
+                  setHighlightedTitles([]);
+                  setStatusFilter(item.id as 'all' | 'critical' | 'internal' | 'disabled');
+                }}
                 className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
-                  statusFilter === item.id
+                  statusFilter === item.id && highlightedTitles.length === 0
                     ? 'bg-indigo-600 text-white'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
@@ -964,7 +1515,21 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
             ))}
           </div>
           {filteredTiles.length > 0 && (
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100"
+              >
+                {filteredTiles.every((t) => selectedTileIds.has(t.id)) ? (
+                  <CheckSquare className="h-3 w-3" />
+                ) : (
+                  <Square className="h-3 w-3" />
+                )}
+                {filteredTiles.every((t) => selectedTileIds.has(t.id))
+                  ? 'Odznacz widoczne'
+                  : `Zaznacz widoczne (${filteredTiles.length})`}
+              </button>
               <button
                 type="button"
                 onClick={() => handleBulkToggleFiltered(true)}
@@ -983,20 +1548,106 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
           )}
         </div>
 
+        {selectedTileIds.size > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-indigo-300 bg-indigo-950 px-4 py-2.5 text-xs text-white shadow-md">
+            <span className="font-bold">
+              Zaznaczono: {selectedTileIds.size} kafelków
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleBulkSelectedAction('enable')}
+                className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-emerald-500"
+              >
+                Włącz
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBulkSelectedAction('disable')}
+                className="rounded-lg bg-slate-700 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-slate-600"
+              >
+                Wyłącz
+              </button>
+              <div className="flex items-center gap-1 rounded-lg bg-slate-900/80 p-1">
+                <select
+                  value={bulkCategory}
+                  onChange={(e) => setBulkCategory(e.target.value)}
+                  className="rounded bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-white outline-none"
+                >
+                  {CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => handleBulkSelectedAction('category', bulkCategory)}
+                  className="rounded bg-indigo-600 px-2 py-0.5 text-[11px] font-bold text-white hover:bg-indigo-500"
+                >
+                  Zmień kategorię
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleBulkSelectedAction('delete')}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-500"
+              >
+                <Trash2 className="h-3 w-3" />
+                Usuń zaznaczone
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTileIds(new Set())}
+                className="rounded-lg px-2 py-1 text-[11px] text-slate-300 hover:text-white"
+              >
+                Anuluj
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="grid gap-3 md:grid-cols-2">
-          {filteredTiles.map((tile) => (
-            <div
-              key={tile.id}
-              className={`flex flex-col justify-between rounded-2xl border bg-white p-4 shadow-xs transition ${
-                tile.enabled ? 'border-slate-200' : 'border-slate-200/70 bg-slate-50/70 opacity-65'
-              }`}
-            >
-              <div>
-                <div className="mb-2 flex items-start justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
-                      {tile.category}
-                    </span>
+          {filteredTiles.map((tile) => {
+            const isSelected = selectedTileIds.has(tile.id);
+            const isConflictMatch =
+              highlightedTitles.length > 0 &&
+              highlightedTitles.some(
+                (ht) =>
+                  tile.title.toLowerCase().includes(ht.toLowerCase()) ||
+                  ht.toLowerCase().includes(tile.title.toLowerCase())
+              );
+            return (
+              <div
+                key={tile.id}
+                className={`flex flex-col justify-between rounded-2xl border bg-white p-4 shadow-xs transition ${
+                  isConflictMatch
+                    ? 'border-rose-400 ring-2 ring-rose-500/40'
+                    : isSelected
+                      ? 'border-indigo-400 ring-2 ring-indigo-500/30'
+                      : tile.enabled
+                        ? 'border-slate-200'
+                        : 'border-slate-200/70 bg-slate-50/70 opacity-65'
+                }`}
+              >
+                <div>
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => toggleSelectTile(tile.id)}
+                        className="rounded p-0.5 text-slate-400 hover:text-indigo-600"
+                        title="Zaznacz do operacji grupowych"
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="h-4 w-4 text-indigo-600" />
+                        ) : (
+                          <Square className="h-4 w-4" />
+                        )}
+                      </button>
+                      <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
+                        {tile.category}
+                      </span>
                     <span
                       className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-bold ${
                         tile.visibility === 'internal'
@@ -1098,7 +1749,8 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

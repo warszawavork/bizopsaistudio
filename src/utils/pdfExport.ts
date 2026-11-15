@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf';
-import type { AuditResult, ChatMessage, WebSource } from '../types';
+import type { AuditResult, ChatMessage, DocComparisonResult, WebSource } from '../types';
 import { escapeHtml, markdownBodyToEmailHtml } from './emailExport';
 import { safeHttpUrl } from '../components/SimpleMarkdown';
 
@@ -588,6 +588,156 @@ export async function exportChatTranscriptToPdf(input: ChatTranscriptPdfInput): 
 
   drawPdfPageFooters(doc, fontFamily, input.companyName);
   doc.save(`Rozmowa_BizOps_AI_${new Date().toISOString().slice(0, 10)}.pdf`);
+}
+
+export async function exportComparisonToPdf(input: {
+  comparison: DocComparisonResult;
+  docAName: string;
+  docBName: string;
+  companyName: string;
+}): Promise<void> {
+  const { comparison, docAName, docBName, companyName } = input;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const hasRoboto = await ensurePolishFonts(doc);
+  const fontFamily = hasRoboto ? 'Roboto' : 'helvetica';
+
+  const pageWidth = 210;
+  const margin = 16;
+  const contentWidth = pageWidth - margin * 2;
+  let y = drawPdfHeader(doc, {
+    title: 'PORÓWNANIE WERSJI DOKUMENTÓW AI',
+    subtitle: `Profil: ${companyName}   |   A: ${docAName}  vs  B: ${docBName}`,
+    metaLine: `Data analizy: ${new Date().toLocaleString('pl-PL')}   |   Ryzyko zmian: ${comparison.riskLevel}`,
+    fontFamily,
+    accentRgb: [124, 58, 237],
+  });
+
+  const ensureSpace = (needed: number) => {
+    if (y + needed > 276) {
+      doc.addPage();
+      y = 18;
+    }
+  };
+
+  // Verdict card
+  const riskColor: [number, number, number] =
+    comparison.riskLevel === 'LOW'
+      ? [5, 150, 105]
+      : comparison.riskLevel === 'MEDIUM'
+        ? [217, 119, 6]
+        : [225, 29, 72];
+  const verdictLines = doc.splitTextToSize(comparison.overallVerdict, contentWidth - 46) as string[];
+  const verdictBoxH = Math.max(22, 12 + verdictLines.length * 4.5);
+
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(margin, y, contentWidth, verdictBoxH, 3, 3, 'FD');
+
+  doc.setFont(fontFamily, 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(15, 23, 42);
+  doc.text('Werdykt porównawczy (v1 vs v2)', margin + 5, y + 7);
+
+  doc.setFont(fontFamily, 'normal');
+  doc.setFontSize(9.2);
+  doc.setTextColor(51, 65, 85);
+  doc.text(verdictLines, margin + 5, y + 12.5);
+
+  doc.setFillColor(...riskColor);
+  doc.roundedRect(pageWidth - margin - 34, y + 4, 30, 13, 2.5, 2.5, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont(fontFamily, 'bold');
+  doc.setFontSize(8.5);
+  doc.text(`RYZYKO: ${comparison.riskLevel}`, pageWidth - margin - 19, y + 11.8, { align: 'center' });
+
+  y += verdictBoxH + 6;
+
+  // Recommended action
+  if (comparison.recommendedAction) {
+    const recLines = doc.splitTextToSize(comparison.recommendedAction, contentWidth - 10) as string[];
+    const recH = 11 + recLines.length * 4.4;
+    ensureSpace(recH);
+    doc.setFillColor(238, 242, 255);
+    doc.setDrawColor(199, 210, 254);
+    doc.roundedRect(margin, y, contentWidth, recH, 2.5, 2.5, 'FD');
+    doc.setFont(fontFamily, 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(55, 48, 163);
+    doc.text('Rekomendowane działanie negocjacyjne:', margin + 4, y + 6);
+    doc.setFont(fontFamily, 'normal');
+    doc.setTextColor(30, 41, 59);
+    doc.text(recLines, margin + 4, y + 11);
+    y += recH + 7;
+  }
+
+  // Differences
+  ensureSpace(14);
+  doc.setFont(fontFamily, 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`1. Wykryte różnice między wersjami (${comparison.differences.length})`, margin, y);
+  y += 6;
+
+  for (const diff of comparison.differences) {
+    const aLines = doc.splitTextToSize(`A (${docAName}): ${diff.docA}`, contentWidth - 10) as string[];
+    const bLines = doc.splitTextToSize(`B (${docBName}): ${diff.docB}`, contentWidth - 10) as string[];
+    const blockH = 11 + (aLines.length + bLines.length) * 4.3;
+    ensureSpace(blockH + 3);
+
+    const badgeColor: [number, number, number] =
+      diff.impact === 'critical'
+        ? [225, 29, 72]
+        : diff.impact === 'warning'
+          ? [217, 119, 6]
+          : [100, 116, 139];
+
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(margin, y, contentWidth, blockH, 2, 2, 'FD');
+
+    doc.setFont(fontFamily, 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(diff.topic, margin + 4, y + 6);
+
+    doc.setFontSize(7.5);
+    doc.setTextColor(...badgeColor);
+    doc.text(diff.impact.toUpperCase(), pageWidth - margin - 4, y + 6, { align: 'right' });
+
+    doc.setFont(fontFamily, 'normal');
+    doc.setFontSize(8.8);
+    doc.setTextColor(71, 85, 105);
+    doc.text(aLines, margin + 4, y + 11.5);
+    const bStartY = y + 11.5 + aLines.length * 4.3;
+    doc.setTextColor(15, 23, 42);
+    doc.text(bLines, margin + 4, bStartY);
+
+    y += blockH + 3.5;
+  }
+
+  // Hidden risks
+  if (comparison.hiddenRisks.length > 0) {
+    y += 4;
+    ensureSpace(14);
+    doc.setFont(fontFamily, 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('2. Ukryte ryzyka i pułapki', margin, y);
+    y += 6;
+
+    for (const risk of comparison.hiddenRisks) {
+      const rLines = doc.splitTextToSize(`• ${risk}`, contentWidth - 8) as string[];
+      ensureSpace(rLines.length * 4.5 + 3);
+      doc.setFont(fontFamily, 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(159, 18, 57);
+      doc.text(rLines, margin + 3, y);
+      y += rLines.length * 4.5 + 2;
+    }
+  }
+
+  drawPdfPageFooters(doc, fontFamily, companyName);
+  doc.save(`Porownanie_Dokumentow_${new Date().toISOString().slice(0, 10)}.pdf`);
 }
 
 export interface PrintReportInput {

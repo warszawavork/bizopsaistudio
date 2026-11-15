@@ -189,21 +189,21 @@ export const WorkflowView: React.FC<WorkflowViewProps> = ({
 
   return (
     <div className="space-y-5">
-      {/* Visual 4-Node Agentic Pipeline Graph */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
-              <GitBranch className="h-4 w-4" />
+      {/* Executive Studio Pro Header + Visual 4-Node Agentic Pipeline Graph */}
+      <div className="relative overflow-hidden rounded-3xl border border-slate-800/80 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-xl">
+        <div className="pointer-events-none absolute -right-16 -top-16 h-52 w-52 rounded-full bg-violet-500/20 blur-3xl" />
+        <div className="relative mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-200">
+              <GitBranch className="h-3 w-3" />
+              Studio Pro • Multi-Agent AI Pipeline
             </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">
-                Orkiestrator Agentic AI (3-Stage Multi-Agent Pipeline)
-              </h3>
-              <p className="text-xs text-slate-500">
-                Automatyczna klasyfikacja leada, weryfikacja polityk firmy i egzekucja do CRM / Make.com
-              </p>
-            </div>
+            <h3 className="text-xl font-extrabold tracking-tight text-white">
+              Orkiestrator 3 Agentów AI — {preset.shortName}
+            </h3>
+            <p className="text-xs text-slate-300">
+              Automatyczna klasyfikacja leada, audyt zgodności z Bazą Wiedzy oraz gotowy plan egzekucji do CRM i Make.com.
+            </p>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -213,9 +213,9 @@ export const WorkflowView: React.FC<WorkflowViewProps> = ({
                 type="button"
                 disabled={running}
                 onClick={() => handleDemoClick(demo)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50/70 px-3 py-1.5 text-xs font-semibold text-violet-900 transition hover:bg-violet-100 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold text-white backdrop-blur-sm transition hover:bg-white/20 disabled:opacity-50"
               >
-                <Play className="h-3.5 w-3.5 text-violet-700" />
+                <Play className="h-3.5 w-3.5 text-amber-300" />
                 Demo: {demo.label}
               </button>
             ))}
@@ -223,40 +223,40 @@ export const WorkflowView: React.FC<WorkflowViewProps> = ({
         </div>
 
         {/* Visual Nodes Row */}
-        <div className="grid gap-3 sm:grid-cols-4">
+        <div className="relative grid gap-3 sm:grid-cols-4">
           {nodes.map((node, index) => {
             const isDone = latestWorkflow && !running ? true : activeStep > node.id;
             const isCurrent = running && activeStep === node.id;
             return (
               <div
                 key={node.id}
-                className={`relative flex items-center justify-between rounded-xl border p-3 transition ${
+                className={`relative flex items-center justify-between rounded-2xl border p-3.5 backdrop-blur-sm transition ${
                   isCurrent
-                    ? 'border-indigo-500 bg-indigo-50/80 ring-2 ring-indigo-500/20'
+                    ? 'border-indigo-400 bg-indigo-500/25 ring-2 ring-indigo-400/40'
                     : isDone
-                      ? 'border-emerald-200 bg-emerald-50/40'
-                      : 'border-slate-200 bg-slate-50/60'
+                      ? 'border-emerald-400/40 bg-emerald-500/15'
+                      : 'border-white/10 bg-white/5'
                 }`}
               >
                 <div className="flex items-center gap-2.5">
                   <div
-                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
+                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-extrabold ${
                       isCurrent
-                        ? 'bg-indigo-600 text-white'
+                        ? 'bg-indigo-500 text-white'
                         : isDone
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-slate-200 text-slate-600'
+                          ? 'bg-emerald-500 text-white'
+                          : 'bg-white/15 text-slate-200'
                     }`}
                   >
                     {isCurrent ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : isDone ? '✓' : node.id}
                   </div>
                   <div>
-                    <p className="text-xs font-bold text-slate-900">{node.title}</p>
-                    <p className="text-[10px] text-slate-500">{node.sub}</p>
+                    <p className="text-xs font-bold text-white">{node.title}</p>
+                    <p className="text-[10px] text-slate-300">{node.sub}</p>
                   </div>
                 </div>
                 {index < nodes.length - 1 && (
-                  <ArrowRight className="hidden h-4 w-4 text-slate-300 sm:block" />
+                  <ArrowRight className="hidden h-4 w-4 text-slate-400 sm:block" />
                 )}
               </div>
             );

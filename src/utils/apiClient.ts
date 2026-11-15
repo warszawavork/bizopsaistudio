@@ -5,6 +5,7 @@ import type {
   ChatPerspective,
   ContextStats,
   DocComparisonResult,
+  InboxFeedItem,
   IntegrationsConfig,
   KnowledgeConsistencyResult,
   KnowledgeTile,
@@ -12,7 +13,9 @@ import type {
   WebSource,
   WebhookSendResult,
   WorkflowRunResult,
+  WorkspaceDataKey,
 } from '../types';
+import { idbEnqueueWorkspaceSave, idbSaveWorkspaceItem } from './offlineDb';
 
 export const CUSTOM_KEY_STORAGE = 'bizops_custom_gemini_key_v1';
 export const SIGNATURE_STORAGE = 'bizops_advisor_signature_v1';
@@ -123,11 +126,16 @@ function buildHeaders(): HeadersInit {
   return headers;
 }
 
-async function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
+async function postJson<T>(
+  url: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
     headers: buildHeaders(),
     body: JSON.stringify(body),
+    signal,
   });
   let data: (T & { error?: string }) | null = null;
   try {
@@ -224,6 +232,7 @@ export async function generateSalesReply(params: {
   includedLinks?: Array<{ label: string; url: string }>;
   threadHistory?: Array<{ role: 'client' | 'advisor'; text: string }>;
   advisorSignature?: AdvisorSignature;
+  followUpDaysSilent?: number;
 }): Promise<SalesReplyResult> {
   return postJson('/api/ai', { action: 'reply_assistant', ...params });
 }
@@ -256,6 +265,13 @@ export async function runSmartIngest(params: {
   sourceUrl?: string;
   fileBase64?: string;
   fileMimeType?: string;
+  ingestMode?: 'standard' | 'book' | 'scan_pages';
+  chunkIndex?: number;
+  totalChunks?: number;
+  chapterHint?: string;
+  existingTileTitles?: string[];
+  pageImages?: Array<{ pageNumber: number; label?: string; base64: string; mimeType: string }>;
+  signal?: AbortSignal;
 }): Promise<{
   summaryNote: string;
   tiles: Array<{
@@ -269,7 +285,8 @@ export async function runSmartIngest(params: {
   latencyMs: number;
   usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
 }> {
-  return postJson('/api/ai', { action: 'ingest', ...params });
+  const { signal, ...payload } = params;
+  return postJson('/api/ai', { action: 'ingest', ...payload }, signal);
 }
 
 export async function runAutoDistillKnowledge(params: {
@@ -410,4 +427,80 @@ export async function recordCloudAiLog(log: any): Promise<{ success: boolean }> 
 
 export async function clearOldCloudAiLogs(): Promise<{ success: boolean; message?: string }> {
   return postJson('/api/stats', { action: 'clear_old_logs' });
+}
+
+export async function fetchCloudInbox(
+  signal?: AbortSignal,
+): Promise<{ success: boolean; items: InboxFeedItem[] }> {
+  const res = await fetch('/api/integrations?action=list_inbox', { signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function ingestCloudInboxItem(input: {
+  source?: InboxFeedItem['source'];
+  senderName?: string;
+  senderContact?: string;
+  fullText: string;
+}): Promise<{ success: boolean; id: string }> {
+  return postJson('/api/integrations', { action: 'ingest_inbox', ...input });
+}
+
+export async function markCloudInboxHandled(
+  id: string,
+  handled: boolean,
+  handledBy?: string,
+): Promise<{ success: boolean; id: string; handled: boolean }> {
+  return postJson('/api/integrations', {
+    action: 'mark_inbox_handled',
+    id,
+    handled,
+    handledBy,
+  });
+}
+
+export async function deleteCloudInboxItem(id: string): Promise<{ success: boolean; id: string }> {
+  return postJson('/api/integrations', { action: 'delete_inbox', id });
+}
+
+export async function fetchCloudWorkspace(
+  presetId: string,
+  signal?: AbortSignal,
+): Promise<{
+  success: boolean;
+  presetId: string;
+  state: Partial<Record<WorkspaceDataKey, unknown>>;
+}> {
+  const res = await fetch(`/api/workspace?presetId=${encodeURIComponent(presetId)}`, { signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function pushWorkspaceKeyToServer(
+  presetId: string,
+  dataKey: WorkspaceDataKey,
+  payload: unknown,
+  authorName?: string,
+): Promise<{ success: boolean }> {
+  return postJson('/api/workspace', { presetId, dataKey, payload, authorName });
+}
+
+export async function saveCloudWorkspaceKey<T>(
+  presetId: string,
+  dataKey: WorkspaceDataKey,
+  payload: T,
+  authorName?: string,
+): Promise<{ synced: boolean; queued: number }> {
+  await idbSaveWorkspaceItem(presetId, dataKey, payload);
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    const queued = await idbEnqueueWorkspaceSave(presetId, dataKey, payload, authorName);
+    return { synced: false, queued };
+  }
+  try {
+    await pushWorkspaceKeyToServer(presetId, dataKey, payload, authorName);
+    return { synced: true, queued: 0 };
+  } catch {
+    const queued = await idbEnqueueWorkspaceSave(presetId, dataKey, payload, authorName);
+    return { synced: false, queued };
+  }
 }

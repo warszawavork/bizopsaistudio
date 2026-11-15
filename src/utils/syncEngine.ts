@@ -3,6 +3,7 @@ import {
   deleteCloudTile,
   fetchCloudAiStats,
   fetchCloudTiles,
+  pushWorkspaceKeyToServer,
   recordCloudAiLog,
   saveBatchCloudTiles,
   saveCloudTile,
@@ -263,6 +264,10 @@ export class RobustSyncEngine {
           flushed++;
         } else if (item.type === 'log_ai' && item.logPayload) {
           await recordCloudAiLog(item.logPayload);
+          await idbRemoveQueueItem(item.id);
+          flushed++;
+        } else if (item.type === 'save_workspace' && item.dataKey && item.payload !== undefined) {
+          await pushWorkspaceKeyToServer(item.presetId, item.dataKey, item.payload, item.authorName);
           await idbRemoveQueueItem(item.id);
           flushed++;
         }

@@ -17,15 +17,18 @@ const FALLBACK_NEON_URL =
   'postgresql://neondb_owner:npg_IhW6l5JcHfgS@ep-green-art-zaw9ljx1-pooler.c-2.eu-west-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require';
 
 function getDb() {
-  const connectionString =
+  const envUrl =
     process.env.DATABASE_URL ||
     process.env.POSTGRES_URL ||
     process.env.STORAGE_POSTGRES_URL ||
     process.env.STORAGE_DATABASE_URL ||
-    process.env.STORAGE_URL ||
-    FALLBACK_NEON_URL;
+    process.env.STORAGE_URL;
 
-  return neon(connectionString);
+  if (!envUrl && process.env.NODE_ENV === 'production') {
+    console.warn('WARN: /api/tiles korzysta z zapasowego polaczenia Neon — ustaw DATABASE_URL w Vercel.');
+  }
+
+  return neon(envUrl || FALLBACK_NEON_URL);
 }
 
 async function readJsonBody(req: IncomingMessage & { body?: unknown }): Promise<Record<string, unknown>> {
@@ -76,6 +79,11 @@ export default async function handler(req: IncomingMessage & { query?: Record<st
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         author_name TEXT DEFAULT 'Zespół'
       );
+    `;
+
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_bizops_tiles_preset_updated
+      ON bizops_knowledge_tiles (preset_id, updated_at DESC);
     `;
 
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);

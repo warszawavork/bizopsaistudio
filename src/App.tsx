@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Activity,
   BookOpen,
   Building2,
+  ChevronDown,
+  Crown,
   Download,
   FileSearch,
+  GitBranch,
+  Kanban,
   Link2,
   MailCheck,
   MessageSquare,
@@ -26,13 +31,21 @@ import type {
   KnowledgeTile,
   SalesReplyResult,
   WebhookConfig,
+  WebhookSendResult,
+  WorkflowRunResult,
 } from './types';
 import {
   fetchCloudAiStats,
+  fetchCloudWorkspace,
   recordCloudAiLog,
+  saveCloudWorkspaceKey,
   sendToWebhook,
 } from './utils/apiClient';
-import { idbGetChatMessages, idbSaveChatMessages } from './utils/offlineDb';
+import {
+  idbGetChatMessages,
+  idbGetWorkspaceItem,
+  idbSaveChatMessages,
+} from './utils/offlineDb';
 import { RobustSyncEngine, type SyncState, type SyncStats } from './utils/syncEngine';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -44,6 +57,9 @@ import { SalesResponderView } from './components/SalesResponderView';
 import { AuditView } from './components/AuditView';
 import { KnowledgeView } from './components/KnowledgeView';
 import { ChatView } from './components/ChatView';
+import { PipelineView } from './components/PipelineView';
+import { WorkflowView } from './components/WorkflowView';
+import { OpsView } from './components/OpsView';
 import { SettingsModal } from './components/SettingsModal';
 import { CustomProfileModal } from './components/CustomProfileModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
@@ -138,8 +154,10 @@ export function App() {
   const [perspective, setPerspective] = useState<ChatPerspective>('client');
   const [auditByPreset, setAuditByPreset] = useState<Record<string, AuditResult | null>>({});
   const [replyByPreset, setReplyByPreset] = useState<Record<string, SalesReplyResult | null>>({});
+  const [workflowByPreset, setWorkflowByPreset] = useState<Record<string, WorkflowRunResult | null>>({});
   const [pendingChatPrompt, setPendingChatPrompt] = useState<string | null>(null);
   const [handoffResponderText, setHandoffResponderText] = useState<string | null>(null);
+  const [studioProMenuOpen, setStudioProMenuOpen] = useState(false);
 
   const [logs, setLogs] = useState<AiOpsLogEntry[]>(() => {
     try {
@@ -150,7 +168,7 @@ export function App() {
     }
   });
 
-  const [webhookConfig] = useState<WebhookConfig>(() => {
+  const [webhookConfig, setWebhookConfig] = useState<WebhookConfig>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_WEBHOOK_KEY);
       return raw
@@ -160,6 +178,10 @@ export function App() {
       return { url: '', autoSendOnHighRisk: false, simulateWhenEmpty: true };
     }
   });
+  const [lastWebhookResult, setLastWebhookResult] = useState<{
+    payload: Record<string, unknown>;
+    result: WebhookSendResult;
+  } | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
@@ -200,7 +222,9 @@ export function App() {
   const currentMessages = messagesByPreset[preset.id] || [];
   const currentAudit = auditByPreset[preset.id] || null;
   const currentReply = replyByPreset[preset.id] || null;
+  const currentWorkflow = workflowByPreset[preset.id] || null;
   const ui = UI_TEXT[language];
+  const isStudioProTab = activeTab === 'pipeline' || activeTab === 'workflow' || activeTab === 'ops';
 
   const syncEngineRef = useRef<RobustSyncEngine | null>(null);
 
@@ -226,7 +250,7 @@ export function App() {
     };
   }, []);
 
-  // Hydratacja historii Czatu AI z lokalnego IndexedDB (Offline-First)
+  // Hydratacja historii Czatu AI oraz CRM Deals z IndexedDB i Neon DB (Offline-First)
   useEffect(() => {
     let cancelled = false;
     void idbGetChatMessages(preset.id).then((cachedMsgs) => {
@@ -236,6 +260,29 @@ export function App() {
         return { ...prev, [preset.id]: cachedMsgs };
       });
     });
+
+    void idbGetWorkspaceItem<CrmDeal[]>(preset.id, 'deals').then((cachedDeals) => {
+      if (cancelled || !cachedDeals?.payload || cachedDeals.payload.length === 0) return;
+      setDealsByPreset((prev) => ({ ...prev, [preset.id]: cachedDeals.payload }));
+    });
+
+    void fetchCloudWorkspace(preset.id)
+      .then((cloud) => {
+        if (cancelled || !cloud.success || !cloud.state) return;
+        if (Array.isArray(cloud.state.deals)) {
+          const cloudDeals = cloud.state.deals as CrmDeal[];
+          setDealsByPreset((prev) => ({ ...prev, [preset.id]: cloudDeals }));
+          try {
+            localStorage.setItem(`${STORAGE_DEALS_PREFIX}${preset.id}`, JSON.stringify(cloudDeals));
+          } catch {
+            // ignore
+          }
+        }
+      })
+      .catch(() => {
+        // Offline gracefully stays on localStorage / IDB
+      });
+
     return () => {
       cancelled = true;
     };
@@ -406,17 +453,32 @@ export function App() {
       });
   };
 
+  const updateDealsWithCloud = (nextDeals: CrmDeal[]) => {
+    setDealsByPreset((prev) => ({
+      ...prev,
+      [preset.id]: nextDeals,
+    }));
+    void saveCloudWorkspaceKey(preset.id, 'deals', nextDeals, userProfile?.name);
+  };
+
   const handleCreateCrmDeal = (dealInput: Omit<CrmDeal, 'id' | 'createdAt'>) => {
     const newDeal: CrmDeal = {
       ...dealInput,
       id: `deal_${Date.now()}`,
       createdAt: new Date().toISOString().slice(0, 10),
     };
-    setDealsByPreset((prev) => ({
-      ...prev,
-      [preset.id]: [newDeal, ...(prev[preset.id] || preset.defaultDeals)],
-    }));
-    showToast(`Zapisano sprawę: ${newDeal.client}`);
+    const nextDeals = [newDeal, ...(dealsByPreset[preset.id] || preset.defaultDeals)];
+    updateDealsWithCloud(nextDeals);
+    showToast(`Zapisano sprawę w chmurze CRM: ${newDeal.client}`);
+  };
+
+  const handleWebhookConfigChange = (cfg: WebhookConfig) => {
+    setWebhookConfig(cfg);
+    try {
+      localStorage.setItem(STORAGE_WEBHOOK_KEY, JSON.stringify(cfg));
+    } catch {
+      // ignore
+    }
   };
 
   const handleSendWebhook = async (payload: Record<string, unknown>, label: string) => {
@@ -426,6 +488,7 @@ export function App() {
         simulate: webhookConfig.simulateWhenEmpty && !webhookConfig.url.trim(),
         payload,
       });
+      setLastWebhookResult({ payload, result });
       appendLog({
         action: 'webhook',
         latencyMs: result.latencyMs,
@@ -533,10 +596,10 @@ export function App() {
                 type="button"
                 onClick={() => setCustomProfileOpen(true)}
                 className="ml-1 inline-flex items-center gap-0.5 rounded-lg bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100"
-                title="Dodaj własny profil firmy"
+                title={ui.header.addCompany}
               >
                 <Plus className="h-3 w-3" />
-                Nowa
+                {ui.header.addCompany}
               </button>
             </div>
 
@@ -634,7 +697,7 @@ export function App() {
                 type="button"
                 onClick={() => setIntegrationsOpen(true)}
                 className="p-1.5 rounded-xl border border-indigo-200/80 bg-indigo-50/80 text-indigo-700 hover:bg-indigo-100 transition"
-                title="Integracje (Gmail, WhatsApp, Meta)"
+                title={ui.header.integrations}
               >
                 <Link2 className="h-4 w-4" />
               </button>
@@ -643,7 +706,7 @@ export function App() {
                 type="button"
                 onClick={() => setSettingsOpen(true)}
                 className="p-1.5 rounded-xl border border-slate-200/80 bg-white text-slate-700 hover:bg-slate-50 transition"
-                title="Ustawienia bota i API"
+                title={ui.settingsButton}
               >
                 <Settings className="h-4 w-4" />
               </button>
@@ -704,7 +767,10 @@ export function App() {
 
             <button
               type="button"
-              onClick={() => setActiveTab('chat')}
+              onClick={() => {
+                setActiveTab('chat');
+                setStudioProMenuOpen(false);
+              }}
               className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all duration-200 ${
                 activeTab === 'chat'
                   ? 'bg-gradient-to-r from-slate-900 to-indigo-950 text-white shadow-md shadow-indigo-950/15'
@@ -714,6 +780,107 @@ export function App() {
               <MessageSquare className={`h-3.5 w-3.5 ${activeTab === 'chat' ? 'text-indigo-300' : ''}`} />
               {ui.tabs.chat}
             </button>
+
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setStudioProMenuOpen((o) => !o)}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-extrabold transition-all duration-200 ${
+                  isStudioProTab
+                    ? 'bg-gradient-to-r from-slate-950 via-indigo-950 to-amber-950 text-amber-300 shadow-md ring-1 ring-amber-400/50'
+                    : 'border border-amber-300/70 bg-gradient-to-r from-amber-50/90 to-indigo-50/70 text-slate-900 hover:border-amber-400 hover:shadow-xs'
+                }`}
+              >
+                <Crown className={`h-3.5 w-3.5 ${isStudioProTab ? 'text-amber-300' : 'text-amber-600'}`} />
+                <span>{ui.studioProLabel}</span>
+                {isStudioProTab && (
+                  <span className="rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
+                    {activeTab === 'pipeline'
+                      ? 'CRM'
+                      : activeTab === 'workflow'
+                        ? 'AI Flow'
+                        : 'Ops'}
+                  </span>
+                )}
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${studioProMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {studioProMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setStudioProMenuOpen(false)}
+                  />
+                  <div className="absolute right-0 sm:left-0 top-full z-50 mt-2 w-80 rounded-2xl border border-slate-200/90 bg-white p-2 shadow-2xl ring-1 ring-slate-950/5">
+                    <div className="mb-1.5 flex items-center justify-between px-2.5 py-1.5">
+                      <span className="inline-flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-amber-700">
+                        <Crown className="h-3 w-3" />
+                        {ui.header.studioProBadge}
+                      </span>
+                      <span className="text-[10px] font-semibold text-slate-400">3 moduły</span>
+                    </div>
+
+                    {[
+                      {
+                        id: 'pipeline' as const,
+                        icon: Kanban,
+                        accent: 'bg-amber-100 text-amber-700',
+                        title: ui.studioProTabs.pipeline,
+                        desc: ui.studioProDescriptions.pipeline,
+                        badge: `${currentDeals.length} spraw`,
+                      },
+                      {
+                        id: 'workflow' as const,
+                        icon: GitBranch,
+                        accent: 'bg-violet-100 text-violet-700',
+                        title: ui.studioProTabs.workflow,
+                        desc: ui.studioProDescriptions.workflow,
+                        badge: '3 Agenty',
+                      },
+                      {
+                        id: 'ops' as const,
+                        icon: Activity,
+                        accent: 'bg-cyan-100 text-cyan-700',
+                        title: ui.studioProTabs.ops,
+                        desc: ui.studioProDescriptions.ops,
+                        badge: `${logs.length} logów`,
+                      },
+                    ].map((mod) => {
+                      const Icon = mod.icon;
+                      const isCurrent = activeTab === mod.id;
+                      return (
+                        <button
+                          key={mod.id}
+                          type="button"
+                          onClick={() => {
+                            setActiveTab(mod.id);
+                            setStudioProMenuOpen(false);
+                          }}
+                          className={`flex w-full items-start gap-3 rounded-xl p-2.5 text-left transition ${
+                            isCurrent
+                              ? 'bg-indigo-50 ring-1 ring-indigo-300'
+                              : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${mod.accent}`}>
+                            <Icon className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-extrabold text-slate-900">{mod.title}</span>
+                              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                                {mod.badge}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{mod.desc}</p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           <div className="hidden items-center gap-2 lg:flex">
@@ -731,19 +898,50 @@ export function App() {
       <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200/70 bg-white/65 px-4 py-2.5 text-[11px] text-slate-600 backdrop-blur-sm">
           <span className="font-medium">
-            {activeTab === 'responder' &&
-              '1. Wklej wiadomość klienta po lewej  →  2. AI połączy Bazę Wiedzy i internet  →  3. Skopiuj gotową odpowiedź po prawej.'}
-            {activeTab === 'audit' &&
-              '1. Wgraj PDF, zdjęcie lub podyktuj notatkę  →  2. AI sprawdzi zgodność z Bazą Wiedzy  →  3. Pobierz raport PDF lub przejdź do odpowiedzi.'}
-            {activeTab === 'knowledge' &&
-              'Dodawaj cenniki, procedury i pliki PDF swojej firmy — wszystkie moduły AI od razu korzystają z tej wiedzy.'}
-            {activeTab === 'chat' &&
-              'Zadaj dowolne pytanie wewnętrzne (marże, ryzyka, procedury) lub przetestuj odpowiedzi w trybie dla klienta.'}
+            {activeTab === 'responder' && ui.tabDescriptions.responder}
+            {activeTab === 'audit' && ui.tabDescriptions.audit}
+            {activeTab === 'knowledge' && ui.tabDescriptions.knowledge}
+            {activeTab === 'chat' && ui.tabDescriptions.chat}
+            {activeTab === 'pipeline' && ui.studioProDescriptions.pipeline}
+            {activeTab === 'workflow' && ui.studioProDescriptions.workflow}
+            {activeTab === 'ops' && ui.studioProDescriptions.ops}
           </span>
           <span className="hidden font-semibold text-indigo-700 sm:inline">
             {activeTilesCount} reguł aktywnych
           </span>
         </div>
+
+        {isStudioProTab && (
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-amber-300/50 bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 p-2 text-xs text-white shadow-md">
+            <span className="inline-flex items-center gap-1.5 px-2.5 text-[11px] font-extrabold uppercase tracking-wider text-amber-300">
+              <Crown className="h-3.5 w-3.5" />
+              {ui.studioProLabel}
+            </span>
+            {[
+              { id: 'pipeline' as const, label: ui.studioProTabs.pipeline, icon: Kanban },
+              { id: 'workflow' as const, label: ui.studioProTabs.workflow, icon: GitBranch },
+              { id: 'ops' as const, label: ui.studioProTabs.ops, icon: Activity },
+            ].map((item) => {
+              const Icon = item.icon;
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition ${
+                    active
+                      ? 'bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 shadow-sm'
+                      : 'text-slate-200 hover:bg-white/10'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         <div key={activeTab} className="animate-enter">
 
@@ -753,6 +951,7 @@ export function App() {
             tiles={currentTiles}
             language={language}
             latestReply={currentReply}
+            authorName={userProfile?.name}
             incomingMessage={handoffResponderText}
             onClearIncomingMessage={() => setHandoffResponderText(null)}
             onReplyComplete={(reply) =>
@@ -845,6 +1044,64 @@ export function App() {
             }}
           />
         )}
+
+        {activeTab === 'pipeline' && (
+          <PipelineView
+            preset={preset}
+            deals={currentDeals}
+            onDealsChange={updateDealsWithCloud}
+            onResetDeals={() => {
+              updateDealsWithCloud(preset.defaultDeals);
+              showToast(`Przywrócono domyślne sprawy CRM dla: ${preset.shortName}`);
+            }}
+            onMascotUpdate={(_, tip) => {
+              if (tip) showToast(tip);
+            }}
+            onSendWebhookPayload={handleSendWebhook}
+          />
+        )}
+
+        {activeTab === 'workflow' && (
+          <WorkflowView
+            preset={preset}
+            tiles={currentTiles}
+            language={language}
+            latestWorkflow={currentWorkflow}
+            onWorkflowComplete={(res) =>
+              setWorkflowByPreset((prev) => ({ ...prev, [preset.id]: res }))
+            }
+            onCreateCrmDeal={handleCreateCrmDeal}
+            onSendWebhookPayload={handleSendWebhook}
+            onMascotUpdate={(_, tip) => {
+              if (tip) showToast(tip);
+            }}
+            onLogAiCall={appendLog}
+          />
+        )}
+
+        {activeTab === 'ops' && (
+          <OpsView
+            logs={logs}
+            onClearLogs={() => {
+              setLogs([]);
+              localStorage.removeItem(STORAGE_LOGS_KEY);
+              showToast('Wyczyszczono logi sesji lokalnej');
+            }}
+            webhookConfig={webhookConfig}
+            onWebhookConfigChange={handleWebhookConfigChange}
+            lastWebhookResult={lastWebhookResult}
+            onTestWebhook={async () => {
+              await handleSendWebhook(
+                {
+                  event: 'bizops.ops.webhook_ping',
+                  company: preset.name,
+                  timestamp: new Date().toISOString(),
+                },
+                'Test Ping Webhook (Studio Pro Ops)'
+              );
+            }}
+          />
+        )}
         </div>
       </main>
 
@@ -886,6 +1143,17 @@ export function App() {
         cloudStats={cloudStats || undefined}
         onRefreshStats={refreshCloudStats}
         tilesCount={currentTiles.length}
+        onBackupRestored={() => {
+          try {
+            const rawPresets = localStorage.getItem(STORAGE_CUSTOM_PRESETS_KEY);
+            if (rawPresets) setCustomPresets(JSON.parse(rawPresets) as IndustryPreset[]);
+            const rawWh = localStorage.getItem(STORAGE_WEBHOOK_KEY);
+            if (rawWh) setWebhookConfig(JSON.parse(rawWh) as WebhookConfig);
+          } catch {
+            // ignore
+          }
+          showToast('Przywrócono pełną konfigurację firmy z pliku backupu');
+        }}
         onTestLogged={(latencyMs, ok, detail) =>
           appendLog({
             action: 'test',
