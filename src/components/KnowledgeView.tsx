@@ -15,6 +15,7 @@ import {
   Layers,
   Loader2,
   MessageSquare,
+  Network,
   Plus,
   RotateCcw,
   Search,
@@ -46,6 +47,7 @@ import {
   readDocumentForStudio,
   type ScannedPdfPageImage,
 } from '../utils/documentReader';
+import { KnowledgeGraphCanvas } from './KnowledgeGraphCanvas';
 
 interface StagedKnowledgeTile {
   title: string;
@@ -212,6 +214,7 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
   const [ingesting, setIngesting] = useState(false);
   const [checkingConsistency, setCheckingConsistency] = useState(false);
   const [consistencyReport, setConsistencyReport] = useState<KnowledgeConsistencyResult | null>(null);
+  const [showGraph, setShowGraph] = useState(false);
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [stagedTiles, setStagedTiles] = useState<StagedKnowledgeTile[]>([]);
   const [ingestSummary, setIngestSummary] = useState<string | null>(null);
@@ -802,6 +805,20 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
 
           <button
             type="button"
+            onClick={() => setShowGraph((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-1.5 text-xs font-bold transition shadow-2xs ${
+              showGraph
+                ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
+            }`}
+            title="Wizualna mapa topologii i powiązań w Bazie Wiedzy"
+          >
+            <Network className="h-3.5 w-3.5 text-indigo-600" />
+            {showGraph ? 'Ukryj mapę wiedzy' : 'Mapa wiedzy (Graf)'}
+          </button>
+
+          <button
+            type="button"
             disabled={checkingConsistency || activeTiles.length === 0}
             onClick={() => void handleRunConsistencyCheck()}
             className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-indigo-600 disabled:opacity-50"
@@ -846,6 +863,18 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Knowledge Graph Canvas */}
+      {showGraph && (
+        <KnowledgeGraphCanvas
+          tiles={tiles}
+          onSelectTile={(t) => {
+            handleStartEdit(t);
+            setShowGraph(false);
+          }}
+          onClose={() => setShowGraph(false)}
+        />
+      )}
 
       {/* Consistency Report Panel */}
       {consistencyReport && (
@@ -918,20 +947,46 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
             </div>
           )}
           {consistencyReport.gaps.length > 0 && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-3 text-xs text-amber-950">
-              <p className="font-bold">Sugerowane braki do uzupełnienia:</p>
-              <ul className="mt-1 list-disc pl-4 space-y-0.5">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-3.5 text-xs text-amber-950 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="font-bold flex items-center gap-1.5 text-amber-900">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+                  Sugerowane braki do uzupełnienia ({consistencyReport.gaps.length}):
+                </p>
+                <span className="text-[10px] text-amber-700">Kliknij lukę, aby utworzyć nowy kafelek:</span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
                 {consistencyReport.gaps.map((g, gi) => (
-                  <li key={gi}>{g}</li>
+                  <div
+                    key={gi}
+                    className="flex items-start justify-between gap-2 rounded-xl border border-amber-200/80 bg-white/90 p-2.5 shadow-2xs hover:border-amber-400 transition"
+                  >
+                    <span className="text-[11px] text-slate-700 leading-snug">{g}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingId(null);
+                        setTitle(g.slice(0, 50));
+                        setContent(`[Uzupełnienie luki wiedzy]: ${g}\n\nWpisz tutaj szczegółowe wytyczne techniczne lub biznesowe...`);
+                        setCategory('Oferta');
+                        setCreatorTab('manual');
+                        const creatorElem = document.getElementById('knowledge-creator-card');
+                        creatorElem?.scrollIntoView({ behavior: 'smooth' });
+                      }}
+                      className="shrink-0 rounded-lg bg-amber-500 px-2 py-1 text-[10px] font-bold text-slate-950 hover:bg-amber-400 transition shadow-xs"
+                    >
+                      + Uzupełnij
+                    </button>
+                  </div>
                 ))}
-              </ul>
+              </div>
             </div>
           )}
         </div>
       )}
 
       {/* Creator Card ("Naucz mnie") */}
-      <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-6 space-y-4">
+      <div id="knowledge-creator-card" className="soft-card rounded-3xl border border-slate-200/80 bg-white p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-bold text-slate-900">Moduł „Naucz mnie” — Dodaj wiedzę do bota</h3>

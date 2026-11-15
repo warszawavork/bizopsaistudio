@@ -7,6 +7,7 @@ import {
   Cpu,
   Download,
   Loader2,
+  MessageSquare,
   Send,
   Trash2,
   Webhook,
@@ -31,7 +32,57 @@ export const OpsView: React.FC<OpsViewProps> = ({
   lastWebhookResult,
   onTestWebhook,
 }) => {
+  const [telegramToken, setTelegramToken] = useState(() => localStorage.getItem('bizops_tg_token') || '');
+  const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('bizops_tg_chat_id') || '');
+  const [sendingTelegram, setSendingTelegram] = useState(false);
+  const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
   const [testingWebhook, setTestingWebhook] = useState(false);
+
+  const handleSendTelegramReport = async () => {
+    if (!telegramToken.trim() || !telegramChatId.trim()) {
+      setTelegramStatus('Uzupełnij Token bota i Chat ID.');
+      return;
+    }
+    setSendingTelegram(true);
+    setTelegramStatus(null);
+    try {
+      localStorage.setItem('bizops_tg_token', telegramToken.trim());
+      localStorage.setItem('bizops_tg_chat_id', telegramChatId.trim());
+
+      const reportText = [
+        '📊 *RAPORT DZIENNY • BIZOPS AI STUDIO*',
+        `📅 Data: ${new Date().toLocaleDateString('pl-PL')} ${new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}`,
+        '',
+        `⚡ *Wywołania AI ogółem:* ${logs.length}`,
+        `✅ *Zakończone sukcesem:* ${logs.filter((l) => l.status === 'success').length}`,
+        `⏱️ *Średni czas (latency):* ${avgLatency} ms`,
+        `🔢 *Zużyte tokeny:* ${totalTokens.toLocaleString('pl-PL')}`,
+        '💰 *Koszt API:* 0,00 zł (Darmowy limit Google)',
+        '',
+        '🤖 _Raport wygenerowany automatycznie przez BizOps AI Studio_'
+      ].join('\n');
+
+      const url = `https://api.telegram.org/bot${encodeURIComponent(telegramToken.trim())}/sendMessage`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: telegramChatId.trim(),
+          text: reportText,
+          parse_mode: 'Markdown',
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Błąd Telegram API: HTTP ${res.status}`);
+      }
+      setTelegramStatus('Wysłano raport na Telegram!');
+    } catch (err) {
+      setTelegramStatus(err instanceof Error ? err.message : 'Nie udało się wysłać raportu.');
+    } finally {
+      setSendingTelegram(false);
+    }
+  };
 
   const successLogs = logs.filter((l) => l.status === 'success' && l.latencyMs > 0);
   const avgLatency =
@@ -149,6 +200,74 @@ export const OpsView: React.FC<OpsViewProps> = ({
             <p className="mt-2 text-2xl font-extrabold text-emerald-200">$0.00</p>
             <p className="mt-1 text-[11px] text-emerald-300/80">Darmowy plan Google AI Studio</p>
           </div>
+        </div>
+      </div>
+
+      {/* Telegram Daily Executive Report Card */}
+      <div className="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50/70 via-white to-indigo-50/60 p-5 shadow-xs space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500 text-white shadow-md">
+              <MessageSquare className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                Raport Dzienny na Telegram (Executive Dispatcher)
+                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-800">
+                  Telegram Bot API
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500">
+                Wyślij błyskawiczne podsumowanie aktywności AI, zapytań i tokenów bezpośrednio na swój kanał lub do grupy zarządu.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+              Telegram Bot Token:
+            </label>
+            <input
+              type="password"
+              value={telegramToken}
+              onChange={(e) => setTelegramToken(e.target.value)}
+              placeholder="np. 7123456789:AAH..."
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-800 outline-none focus:border-sky-500"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+              Chat ID (Twój ID lub grupy):
+            </label>
+            <input
+              type="text"
+              value={telegramChatId}
+              onChange={(e) => setTelegramChatId(e.target.value)}
+              placeholder="np. -100123456789 lub 987654321"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-800 outline-none focus:border-sky-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 pt-1 border-t border-sky-100 text-xs">
+          <div>
+            {telegramStatus && (
+              <span className={`text-xs font-semibold ${telegramStatus.includes('Wysłano') ? 'text-emerald-700' : 'text-rose-600'}`}>
+                {telegramStatus}
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            disabled={sendingTelegram}
+            onClick={() => void handleSendTelegramReport()}
+            className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-sky-700 transition disabled:opacity-50"
+          >
+            {sendingTelegram ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+            Wyślij Raport na Telegram teraz
+          </button>
         </div>
       </div>
 

@@ -18,6 +18,7 @@ import {
   Loader2,
   Mail,
   MessageCircle,
+  MessageSquare,
   MessageSquarePlus,
   Mic,
   MicOff,
@@ -1434,6 +1435,20 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       <Copy className="h-3.5 w-3.5" />
                     )}
                     {copiedMode === 'all' ? 'Skopiowano całość!' : 'Kopiuj Temat + Treść'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const textToShare = `${editableSubject ? `*${editableSubject}*\n\n` : ''}${editableBody}`;
+                      const encoded = encodeURIComponent(textToShare);
+                      // Próba otwarcia protokołu natywnego WhatsApp na Windowsie, a w nowej karcie WhatsApp Web
+                      window.open(`https://web.whatsapp.com/send?text=${encoded}`, '_blank');
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 transition shadow-2xs"
+                    title="Otwórz czat WhatsApp Web lub Desktop z gotową odpowiedzią"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5 text-emerald-600" />
+                    Wyślij na WhatsApp
                   </button>
                   <button
                     type="button"
