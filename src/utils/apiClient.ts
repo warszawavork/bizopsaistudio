@@ -342,7 +342,17 @@ export async function deleteCloudTile(id: string): Promise<{ success: boolean }>
 
 export async function fetchCloudAiStats(): Promise<{
   success: boolean;
-  stats: { todayRequests: number; todayTokens: number; avgLatency: number };
+  stats: {
+    todayRequests: number;
+    todayTokens: number;
+    avgLatency: number;
+    minuteRequests?: number;
+    minuteTokens?: number;
+    dbSizeBytes?: number;
+    maxStorageBytes?: number;
+    tilesCount?: number;
+    logsCount?: number;
+  };
   logs: any[];
 }> {
   const res = await fetch('/api/stats');
@@ -352,4 +362,8 @@ export async function fetchCloudAiStats(): Promise<{
 
 export async function recordCloudAiLog(log: any): Promise<{ success: boolean }> {
   return postJson('/api/stats', log);
+}
+
+export async function clearOldCloudAiLogs(): Promise<{ success: boolean; message?: string }> {
+  return postJson('/api/stats', { action: 'clear_old_logs' });
 }

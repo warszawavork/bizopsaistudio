@@ -302,6 +302,16 @@ export function App() {
     window.setTimeout(() => setToast(null), 3200);
   };
 
+  const refreshCloudStats = () => {
+    void fetchCloudAiStats()
+      .then((res) => {
+        if (res.success && res.stats) {
+          setCloudStats({ ...res.stats, recentLogs: res.logs || [] });
+        }
+      })
+      .catch(() => {});
+  };
+
   const appendLog = (entry: Omit<AiOpsLogEntry, 'id' | 'timestamp' | 'presetName' | 'model'>) => {
     const newLogEntry: AiOpsLogEntry = {
       id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -317,10 +327,7 @@ export function App() {
       ...newLogEntry,
       userName: userProfile?.name || 'Bogdan',
     }).then(() => {
-      // Refresh stats
-      void fetchCloudAiStats().then((res) => {
-        if (res.success) setCloudStats(res.stats);
-      });
+      refreshCloudStats();
     });
   };
 
@@ -494,7 +501,11 @@ export function App() {
             </button>
 
             {/* AI Quota Monitor */}
-            <GeminiQuotaWidget logs={logs} cloudStats={cloudStats || undefined} />
+            <GeminiQuotaWidget
+              logs={logs}
+              cloudStats={cloudStats || undefined}
+              onRefreshStats={refreshCloudStats}
+            />
 
             {/* Utility Toolbar */}
             <div className="flex items-center gap-1 border-l border-slate-200/80 pl-2">
@@ -773,6 +784,9 @@ export function App() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        cloudStats={cloudStats || undefined}
+        onRefreshStats={refreshCloudStats}
+        tilesCount={currentTiles.length}
         onTestLogged={(latencyMs, ok, detail) =>
           appendLog({
             action: 'test',

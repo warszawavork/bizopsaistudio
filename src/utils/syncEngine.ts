@@ -8,10 +8,32 @@ import {
 
 export type SyncState = 'connected' | 'syncing' | 'offline' | 'error';
 
+export interface CloudAiLogItem {
+  id: string;
+  timestamp: string;
+  action: string;
+  presetName: string;
+  model: string;
+  latencyMs: number;
+  promptTokens: number;
+  candidatesTokens: number;
+  totalTokens: number;
+  status: string;
+  summary: string;
+  userName?: string;
+}
+
 export interface SyncStats {
   todayRequests: number;
   todayTokens: number;
   avgLatency: number;
+  minuteRequests?: number;
+  minuteTokens?: number;
+  dbSizeBytes?: number;
+  maxStorageBytes?: number;
+  tilesCount?: number;
+  logsCount?: number;
+  recentLogs?: CloudAiLogItem[];
 }
 
 export interface SyncEngineListeners {
@@ -81,7 +103,7 @@ export class RobustSyncEngine {
   private abortController: AbortController | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private consecutiveErrors = 0;
-  private baseIntervalMs = 6000;
+  private baseIntervalMs = 5000;
   private isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
   constructor(initialPresetId: string, initialTiles: KnowledgeTile[], listeners: SyncEngineListeners) {
@@ -156,11 +178,21 @@ export class RobustSyncEngine {
     try {
       this.abortController = new AbortController();
 
-      // Pobierz kafelki dla aktywnego profilu z Neon DB
-      const res = await fetchCloudTiles(currentPreset);
+      // Równoległe pobranie kafelków oraz globalnych statystyk AI / pamięci Neon DB
+      const [res, statsRes] = await Promise.all([
+        fetchCloudTiles(currentPreset),
+        fetchCloudAiStats().catch(() => null),
+      ]);
+
+      // Aktualizacja statystyk AI i pamięci bazy Neon niezależnie od kafelków
+      if (statsRes && statsRes.success && statsRes.stats) {
+        this.listeners.onStatsUpdated?.({
+          ...statsRes.stats,
+          recentLogs: statsRes.logs || [],
+        });
+      }
 
       if (this.activePresetId !== currentPreset) {
-        // Użytkownik w międzyczasie zmienił profil, odrzuć odpowiedź
         return;
       }
 
@@ -192,21 +224,10 @@ export class RobustSyncEngine {
         this.listeners.onTilesUpdated?.(currentPreset, serverTiles);
       }
 
-      // 4. Pobranie globalnych statystyk zapytań AI
-      try {
-        const statsRes = await fetchCloudAiStats();
-        if (statsRes.success && statsRes.stats) {
-          this.listeners.onStatsUpdated?.(statsRes.stats);
-        }
-      } catch {
-        // Ciche ignorowanie błędu statystyk, nie blokuje bazy wiedzy
-      }
-
       this.updateStatus('connected');
       this.consecutiveErrors = 0;
     } catch (err: unknown) {
       this.consecutiveErrors++;
-      // Po 3 nieudanych próbach ustaw stan błędu, nie panikuj przy pojedynczym blipie
       if (this.consecutiveErrors >= 3) {
         this.updateStatus('error');
       }
@@ -250,7 +271,6 @@ export class RobustSyncEngine {
   private startPolling() {
     this.stopPolling();
     this.timer = setInterval(() => {
-      // Jeśli wystąpiły błędy, stosuj backoff (zwiększ odstęp)
       const shouldRun = this.consecutiveErrors === 0 || Math.random() > 0.5;
       if (shouldRun) {
         void this.syncNow(false);

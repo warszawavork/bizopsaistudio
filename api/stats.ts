@@ -4,6 +4,8 @@ import { neon } from '@neondatabase/serverless';
 const FALLBACK_NEON_URL =
   'postgresql://neondb_owner:npg_IhW6l5JcHfgS@ep-green-art-zaw9ljx1-pooler.c-2.eu-west-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require';
 
+const NEON_FREE_TIER_MAX_BYTES = 512 * 1024 * 1024; // 512 MB (0.5 GB)
+
 function getDb() {
   const connectionString =
     process.env.DATABASE_URL ||
@@ -36,7 +38,7 @@ function sendJson(res: ServerResponse, status: number, data: unknown) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.end(JSON.stringify(data));
 }
@@ -50,7 +52,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
   try {
     const sql = getDb();
 
-    // Ensure table exists
+    // Ensure tables exist
     await sql`
       CREATE TABLE IF NOT EXISTS bizops_ai_logs (
         id TEXT PRIMARY KEY,
@@ -68,38 +70,83 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       );
     `;
 
-    if (req.method === 'GET') {
-      const statsRows = await sql`
-        SELECT 
-          count(*)::int as "todayRequests",
-          coalesce(sum(total_tokens), 0)::int as "todayTokens",
-          coalesce(avg(latency_ms), 0)::int as "avgLatency"
-        FROM bizops_ai_logs
-        WHERE timestamp >= date_trunc('day', NOW());
-      `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS bizops_knowledge_tiles (
+        id TEXT PRIMARY KEY,
+        preset_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'public',
+        priority TEXT DEFAULT 'standard',
+        content TEXT NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        author_name TEXT DEFAULT 'Zespół'
+      );
+    `;
 
-      const recentLogs = await sql`
-        SELECT 
-          id,
-          timestamp,
-          action,
-          preset_name as "presetName",
-          model,
-          latency_ms as "latencyMs",
-          prompt_tokens as "promptTokens",
-          candidates_tokens as "candidatesTokens",
-          total_tokens as "totalTokens",
-          status,
-          summary,
-          user_name as "userName"
-        FROM bizops_ai_logs
-        ORDER BY timestamp DESC
-        LIMIT 40;
-      `;
+    if (req.method === 'GET') {
+      const [todayStatsRows, minuteStatsRows, storageRows, recentLogs] = await Promise.all([
+        sql`
+          SELECT 
+            count(*)::int as "todayRequests",
+            coalesce(sum(total_tokens), 0)::int as "todayTokens",
+            coalesce(avg(latency_ms), 0)::int as "avgLatency"
+          FROM bizops_ai_logs
+          WHERE timestamp >= date_trunc('day', NOW());
+        `,
+        sql`
+          SELECT 
+            count(*)::int as "minuteRequests",
+            coalesce(sum(total_tokens), 0)::int as "minuteTokens"
+          FROM bizops_ai_logs
+          WHERE timestamp >= NOW() - INTERVAL '1 minute';
+        `,
+        sql`
+          SELECT 
+            pg_database_size(current_database())::bigint as "dbSizeBytes",
+            (SELECT count(*)::int FROM bizops_knowledge_tiles) as "tilesCount",
+            (SELECT count(*)::int FROM bizops_ai_logs) as "logsCount";
+        `,
+        sql`
+          SELECT 
+            id,
+            timestamp,
+            action,
+            preset_name as "presetName",
+            model,
+            latency_ms as "latencyMs",
+            prompt_tokens as "promptTokens",
+            candidates_tokens as "candidatesTokens",
+            total_tokens as "totalTokens",
+            status,
+            summary,
+            user_name as "userName"
+          FROM bizops_ai_logs
+          ORDER BY timestamp DESC
+          LIMIT 30;
+        `,
+      ]);
+
+      const todayRow = todayStatsRows[0] || { todayRequests: 0, todayTokens: 0, avgLatency: 0 };
+      const minuteRow = minuteStatsRows[0] || { minuteRequests: 0, minuteTokens: 0 };
+      const storageRow = storageRows[0] || { dbSizeBytes: 7500000, tilesCount: 0, logsCount: 0 };
+
+      const dbSizeBytes = Number(storageRow.dbSizeBytes || 7500000);
 
       sendJson(res, 200, {
         success: true,
-        stats: statsRows[0] || { todayRequests: 0, todayTokens: 0, avgLatency: 0 },
+        stats: {
+          todayRequests: Number(todayRow.todayRequests || 0),
+          todayTokens: Number(todayRow.todayTokens || 0),
+          avgLatency: Number(todayRow.avgLatency || 0),
+          minuteRequests: Number(minuteRow.minuteRequests || 0),
+          minuteTokens: Number(minuteRow.minuteTokens || 0),
+          dbSizeBytes,
+          maxStorageBytes: NEON_FREE_TIER_MAX_BYTES,
+          tilesCount: Number(storageRow.tilesCount || 0),
+          logsCount: Number(storageRow.logsCount || 0),
+        },
         logs: recentLogs,
         timestamp: new Date().toISOString(),
       });
@@ -108,6 +155,16 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
 
     if (req.method === 'POST') {
       const body = await readJsonBody(req);
+
+      if (body.action === 'clear_old_logs') {
+        await sql`
+          DELETE FROM bizops_ai_logs
+          WHERE timestamp < date_trunc('day', NOW());
+        `;
+        sendJson(res, 200, { success: true, message: 'Wyczyszczono archiwalne logi AI sprzed dzisiejszego dnia.' });
+        return;
+      }
+
       const log = (body.log || body) as Record<string, unknown>;
 
       const id = String(log.id || `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
