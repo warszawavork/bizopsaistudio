@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   Building2,
@@ -27,13 +27,11 @@ import type {
   WebhookConfig,
 } from './types';
 import {
-  deleteCloudTile,
   fetchCloudAiStats,
-  fetchCloudTiles,
   recordCloudAiLog,
-  saveBatchCloudTiles,
   sendToWebhook,
 } from './utils/apiClient';
+import { RobustSyncEngine, type SyncState, type SyncStats } from './utils/syncEngine';
 import { UI_TEXT } from './utils/i18n';
 import { SalesResponderView } from './components/SalesResponderView';
 import { AuditView } from './components/AuditView';
@@ -159,8 +157,8 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
   const [floatingToasts, setFloatingToasts] = useState<ToastItem[]>([]);
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<'connected' | 'syncing' | 'error'>('connected');
-  const [cloudStats, setCloudStats] = useState<{ todayRequests: number; todayTokens: number; avgLatency: number } | null>(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<SyncState>('connected');
+  const [cloudStats, setCloudStats] = useState<SyncStats | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
     try {
       const raw = localStorage.getItem('bizops_user_profile');
@@ -179,7 +177,7 @@ export function App() {
       timestamp: new Date().toISOString(),
       ...item,
     };
-    // Keep max 1 toast at a time so there is zero clutter/spam!
+    // Maksymalnie 1 dyskretne powiadomienie na raz
     setFloatingToasts([newToast]);
   };
 
@@ -195,128 +193,67 @@ export function App() {
   const currentReply = replyByPreset[preset.id] || null;
   const ui = UI_TEXT[language];
 
-  // Neon Postgres Realtime Sync Effect (SILENT BACKGROUND POLLING - NO POPUP SPAM)
+  const syncEngineRef = useRef<RobustSyncEngine | null>(null);
+
+  // Inicjalizacja RobustSyncEngine na starcie
   useEffect(() => {
-    let isMounted = true;
+    const engine = new RobustSyncEngine(preset.id, currentTiles, {
+      onStatusChange: (status) => setCloudSyncStatus(status),
+      onTilesUpdated: (presetId, newTiles) => {
+        setTilesByPreset((prev) => ({ ...prev, [presetId]: newTiles }));
+      },
+      onStatsUpdated: (stats) => setCloudStats(stats),
+    });
 
-    async function syncWithCloud(isInitial = false) {
-      try {
-        const res = await fetchCloudTiles(preset.id);
-        if (!isMounted || !res.success) return;
-
-        // If cloud table is empty, seed current tiles once
-        if (res.tiles.length === 0 && currentTiles.length > 0) {
-          await saveBatchCloudTiles(currentTiles, preset.id, 'Inicjalizacja');
-          if (isMounted) setCloudSyncStatus('connected');
-          return;
-        }
-
-        const serverTiles = res.tiles;
-
-        // Two-way smart sync comparison:
-        const serverMap = new Map(serverTiles.map((t) => [t.id, t]));
-        const localMap = new Map(currentTiles.map((t) => [t.id, t]));
-
-        // 1. Sprawdzenie, czy kafelek został usunięty na innym urządzeniu
-        const hasServerDeletions = currentTiles.some((t) => !serverMap.has(t.id));
-
-        // 2. Sprawdzenie, czy pojawiły się nowe kafelki z innego urządzenia
-        const hasServerAdditions = serverTiles.some((t) => !localMap.has(t.id));
-
-        // 3. Sprawdzenie aktualizacji treści/statusów
-        const hasServerUpdates = serverTiles.some((st) => {
-          const local = localMap.get(st.id);
-          return (
-            local &&
-            (local.content !== st.content ||
-              local.title !== st.title ||
-              local.category !== st.category ||
-              local.enabled !== st.enabled ||
-              local.priority !== st.priority ||
-              local.visibility !== st.visibility)
-          );
-        });
-
-        // Initial sync: jeśli komputer ma więcej kafelków i żaden nie został celowo usunięty w chmurze
-        if (isInitial && currentTiles.length > serverTiles.length && !hasServerDeletions) {
-          const author = userProfile?.name
-            ? `${userProfile.name} (${userProfile.role.split('/')[0].trim()})`
-            : 'Bogdan';
-          await saveBatchCloudTiles(currentTiles, preset.id, author);
-          if (isMounted) setCloudSyncStatus('connected');
-          return;
-        }
-
-        // Zastosuj zmiany z serwera (usunięcia, dodania, edycje)
-        if (hasServerDeletions || hasServerAdditions || hasServerUpdates) {
-          if (isMounted) {
-            setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
-          }
-        }
-
-        // Silently fetch AI stats
-        try {
-          const statsRes = await fetchCloudAiStats();
-          if (isMounted && statsRes.success) {
-            setCloudStats(statsRes.stats);
-          }
-        } catch {
-          // ignore
-        }
-
-        if (isMounted) setCloudSyncStatus('connected');
-      } catch (err) {
-        if (isMounted) setCloudSyncStatus('error');
-      }
-    }
-
-    void syncWithCloud(true);
-
-    const interval = setInterval(() => {
-      void syncWithCloud(false);
-    }, 6000);
+    syncEngineRef.current = engine;
 
     return () => {
-      isMounted = false;
-      clearInterval(interval);
+      engine.destroy();
+      syncEngineRef.current = null;
     };
+  }, []);
+
+  // Obsługa przełączenia profilu branżowego bez wyścigów sieciowych
+  useEffect(() => {
+    if (syncEngineRef.current) {
+      syncEngineRef.current.setPreset(preset.id, currentTiles);
+    }
   }, [preset.id]);
 
-  const handleTilesChangeWithCloud = async (next: KnowledgeTile[]) => {
-    // Sprawdź, czy nastąpiło usunięcie kafelka
-    const nextIds = new Set(next.map((t) => t.id));
-    const deletedTiles = currentTiles.filter((t) => !nextIds.has(t.id));
+  // Synchronizacja lokalnego bufora w silniku
+  useEffect(() => {
+    if (syncEngineRef.current) {
+      syncEngineRef.current.updateLocalTiles(currentTiles);
+    }
+  }, [currentTiles]);
 
+  const handleTilesChangeWithCloud = async (next: KnowledgeTile[]) => {
     setTilesByPreset((prev) => ({ ...prev, [preset.id]: next }));
     const author = userProfile?.name
       ? `${userProfile.name} (${userProfile.role.split('/')[0].trim()})`
       : 'Użytkownik';
 
-    try {
-      // Jeśli usunięto kafelki, wyślij natychmiastowe usunięcie do Neon DB
-      for (const del of deletedTiles) {
-        void deleteCloudTile(del.id);
+    if (syncEngineRef.current) {
+      try {
+        const { deletedCount } = await syncEngineRef.current.pushTiles(next, author);
+        if (deletedCount > 0) {
+          addFloatingToast({
+            type: 'deleted',
+            title: 'Usunięto z chmury',
+            message: `Kafelek usunięty ze wszystkich urządzeń (${deletedCount})`,
+            authorName: author,
+          });
+        } else {
+          addFloatingToast({
+            type: 'created',
+            title: 'Zapisano w chmurze',
+            message: 'Baza wiedzy zsynchronizowana ze wszystkimi urządzeniami',
+            authorName: author,
+          });
+        }
+      } catch (err) {
+        console.error('Błąd zapisu kafelka do chmury:', err);
       }
-
-      await saveBatchCloudTiles(next, preset.id, author);
-
-      if (deletedTiles.length > 0) {
-        addFloatingToast({
-          type: 'deleted',
-          title: 'Usunięto z chmury',
-          message: `Kafelek "${deletedTiles[0].title.slice(0, 30)}" usunięty ze wszystkich urządzeń`,
-          authorName: author,
-        });
-      } else {
-        addFloatingToast({
-          type: 'created',
-          title: 'Zapisano w chmurze',
-          message: 'Kafelek zsynchronizowany ze wszystkimi urządzeniami',
-          authorName: author,
-        });
-      }
-    } catch (err) {
-      console.error('Błąd zapisu kafelka do chmury:', err);
     }
   };
 
@@ -524,16 +461,36 @@ export function App() {
               <span className="relative flex h-2 w-2">
                 <span
                   className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                    cloudSyncStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
+                    cloudSyncStatus === 'connected'
+                      ? 'bg-emerald-400'
+                      : cloudSyncStatus === 'syncing'
+                      ? 'bg-cyan-400'
+                      : cloudSyncStatus === 'offline'
+                      ? 'bg-slate-400'
+                      : 'bg-amber-400'
                   }`}
                 ></span>
                 <span
                   className={`relative inline-flex rounded-full h-2 w-2 ${
-                    cloudSyncStatus === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'
+                    cloudSyncStatus === 'connected'
+                      ? 'bg-emerald-500'
+                      : cloudSyncStatus === 'syncing'
+                      ? 'bg-cyan-500'
+                      : cloudSyncStatus === 'offline'
+                      ? 'bg-slate-500'
+                      : 'bg-amber-500'
                   }`}
                 ></span>
               </span>
-              <span>{userProfile?.name ? `Cześć, ${userProfile.name}` : 'Mój Profil'}</span>
+              <span>
+                {userProfile?.name ? `Cześć, ${userProfile.name}` : 'Mój Profil'}
+                <span className="text-[10px] font-normal text-slate-500 ml-1.5">
+                  {cloudSyncStatus === 'connected' && '• 🟢 Neon'}
+                  {cloudSyncStatus === 'syncing' && '• 🔄 Sync'}
+                  {cloudSyncStatus === 'offline' && '• ⚪ Offline'}
+                  {cloudSyncStatus === 'error' && '• 🟡 Ponawianie'}
+                </span>
+              </span>
             </button>
 
             {/* AI Quota Monitor */}

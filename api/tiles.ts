@@ -62,7 +62,7 @@ export default async function handler(req: IncomingMessage & { query?: Record<st
   try {
     const sql = getDb();
 
-    // Auto-create table if not exists
+    // Auto-create table if not exists with indexes for maximum performance
     await sql`
       CREATE TABLE IF NOT EXISTS bizops_knowledge_tiles (
         id TEXT PRIMARY KEY,
@@ -125,7 +125,7 @@ export default async function handler(req: IncomingMessage & { query?: Record<st
         return;
       }
 
-      // Synchronizacja wsadowa (batch) – dodaje/aktualizuje oraz usuwa kafelki nieobecne w nowej liście
+      // Synchronizacja wsadowa (batch) – równoległe zapisy w paczkach po 10 i usuwanie nieobecnych kafelków
       if (action === 'batch') {
         const tiles = (body.tiles || []) as KnowledgeTilePayload[];
         const targetPreset = String(body.presetId || presetId);
@@ -135,39 +135,46 @@ export default async function handler(req: IncomingMessage & { query?: Record<st
           await sql`DELETE FROM bizops_knowledge_tiles WHERE preset_id = ${targetPreset};`;
         } else {
           const tileIds = tiles.map((t) => t.id);
-          // Usuń z bazy Neon kafelki, które użytkownik usunął w aplikacji
+          // Usuń z bazy Neon kafelki, które zostały skasowane na urządzeniu
           await sql`
             DELETE FROM bizops_knowledge_tiles
             WHERE preset_id = ${targetPreset}
             AND id != ALL(${tileIds}::text[]);
           `;
 
-          for (const t of tiles) {
-            await sql`
-              INSERT INTO bizops_knowledge_tiles (
-                id, preset_id, title, category, visibility, priority, content, enabled, updated_at, author_name
-              ) VALUES (
-                ${t.id}, 
-                ${targetPreset}, 
-                ${t.title}, 
-                ${t.category}, 
-                ${t.visibility || 'public'}, 
-                ${t.priority || 'standard'}, 
-                ${t.content}, 
-                ${t.enabled ?? true}, 
-                NOW(), 
-                ${author}
+          // Równoległe zapisy w paczkach po 10 dla minimalizacji opóźnień sieciowych
+          const CHUNK_SIZE = 10;
+          for (let i = 0; i < tiles.length; i += CHUNK_SIZE) {
+            const chunk = tiles.slice(i, i + CHUNK_SIZE);
+            await Promise.all(
+              chunk.map((t) =>
+                sql`
+                  INSERT INTO bizops_knowledge_tiles (
+                    id, preset_id, title, category, visibility, priority, content, enabled, updated_at, author_name
+                  ) VALUES (
+                    ${t.id}, 
+                    ${targetPreset}, 
+                    ${t.title}, 
+                    ${t.category || 'Ogólne'}, 
+                    ${t.visibility || 'public'}, 
+                    ${t.priority || 'standard'}, 
+                    ${t.content}, 
+                    ${t.enabled ?? true}, 
+                    NOW(), 
+                    ${author}
+                  )
+                  ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    category = EXCLUDED.category,
+                    visibility = EXCLUDED.visibility,
+                    priority = EXCLUDED.priority,
+                    content = EXCLUDED.content,
+                    enabled = EXCLUDED.enabled,
+                    updated_at = NOW(),
+                    author_name = EXCLUDED.author_name;
+                `
               )
-              ON CONFLICT (id) DO UPDATE SET
-                title = EXCLUDED.title,
-                category = EXCLUDED.category,
-                visibility = EXCLUDED.visibility,
-                priority = EXCLUDED.priority,
-                content = EXCLUDED.content,
-                enabled = EXCLUDED.enabled,
-                updated_at = NOW(),
-                author_name = EXCLUDED.author_name;
-            `;
+            );
           }
         }
 
