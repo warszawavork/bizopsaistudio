@@ -3,7 +3,6 @@ import {
   BookOpen,
   Building2,
   FileSearch,
-  Globe,
   Link2,
   MailCheck,
   MessageSquare,
@@ -175,11 +174,12 @@ export function App() {
 
   const addFloatingToast = (item: Omit<ToastItem, 'id' | 'timestamp'>) => {
     const newToast: ToastItem = {
-      id: `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `toast_${Date.now()}`,
       timestamp: new Date().toISOString(),
       ...item,
     };
-    setFloatingToasts((prev) => [newToast, ...prev.slice(0, 4)]);
+    // Keep max 1 toast at a time so there is zero clutter/spam!
+    setFloatingToasts([newToast]);
   };
 
   const dismissFloatingToast = (id: string) => {
@@ -194,7 +194,7 @@ export function App() {
   const currentReply = replyByPreset[preset.id] || null;
   const ui = UI_TEXT[language];
 
-  // Neon Postgres Realtime Sync Effect
+  // Neon Postgres Realtime Sync Effect (SILENT BACKGROUND POLLING - NO POPUP SPAM)
   useEffect(() => {
     let isMounted = true;
 
@@ -203,106 +203,60 @@ export function App() {
         const res = await fetchCloudTiles(preset.id);
         if (!isMounted || !res.success) return;
 
-        // If cloud table is empty for this preset, seed current tiles to Neon!
+        // If cloud table is empty, seed current tiles once
         if (res.tiles.length === 0 && currentTiles.length > 0) {
           await saveBatchCloudTiles(currentTiles, preset.id, 'Inicjalizacja');
-          if (isMounted) {
-            setCloudSyncStatus('connected');
-            if (isInitial) {
-              addFloatingToast({
-                type: 'sync',
-                title: 'Neon Postgres Aktywny',
-                message: `Baza w chmurze zainicjalizowana (${currentTiles.length} kafelków)`,
-              });
-            }
-          }
+          if (isMounted) setCloudSyncStatus('connected');
           return;
         }
 
         const serverTiles = res.tiles;
 
-        // SMART SYNC & MERGE LOGIC:
-        // 1. If local has MORE tiles than cloud server (e.g. computer has 30+ tiles from yesterday):
-        // Automatically upload and sync all local tiles into Neon cloud!
-        if (currentTiles.length > serverTiles.length) {
+        // 1. If local has MORE tiles than cloud server (e.g. computer has 30+ tiles):
+        // Silently sync local tiles into Neon cloud on first load
+        if (currentTiles.length > serverTiles.length && isInitial) {
           const author = userProfile?.name
             ? `${userProfile.name} (${userProfile.role.split('/')[0].trim()})`
             : 'Bogdan';
           await saveBatchCloudTiles(currentTiles, preset.id, author);
-          if (isMounted) {
-            setCloudSyncStatus('connected');
-            addFloatingToast({
-              type: 'sync',
-              title: 'Zsynchronizowano z Chmurą Neon',
-              message: `Wysłano ${currentTiles.length} kafelków z komputera do chmury!`,
-              authorName: author,
-            });
-          }
+          if (isMounted) setCloudSyncStatus('connected');
           return;
         }
 
-        // 2. If cloud has more tiles (e.g. phone syncing from cloud):
+        // 2. If cloud has more tiles (e.g. phone pulling from cloud):
         if (serverTiles.length > currentTiles.length) {
           setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
-          if (isMounted) {
-            setCloudSyncStatus('connected');
-            if (!isInitial) {
-              addFloatingToast({
-                type: 'sync',
-                title: 'Pobrano wiedzę z chmury',
-                message: `Zaktualizowano ${serverTiles.length} kafelków zespołu`,
-              });
-            }
-          }
+          if (isMounted) setCloudSyncStatus('connected');
           return;
         }
 
-        // 3. Same count: check for content updates
+        // 3. Silent check for content updates
         const localMap = new Map(currentTiles.map((t) => [t.id, t]));
-        let hasNewOrUpdated = false;
-        let newestTileTitle = '';
-        let newestAuthor = '';
-
+        let hasChanges = false;
         for (const st of serverTiles) {
           const local = localMap.get(st.id);
-          if (!local) {
-            hasNewOrUpdated = true;
-            newestTileTitle = st.title;
-            newestAuthor = st.authorName || 'Zespół';
-            break;
-          }
-          if (local.content !== st.content || local.title !== st.title || local.enabled !== st.enabled) {
-            hasNewOrUpdated = true;
-            newestTileTitle = st.title;
-            newestAuthor = st.authorName || 'Zespół';
+          if (!local || local.content !== st.content || local.title !== st.title || local.enabled !== st.enabled) {
+            hasChanges = true;
             break;
           }
         }
 
-        if (hasNewOrUpdated) {
+        if (hasChanges) {
           setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
-          if (!isInitial) {
-            addFloatingToast({
-              type: 'updated',
-              title: 'Wiedza zaktualizowana',
-              message: `Zaktualizowano: "${newestTileTitle || 'Reguła biznesowa'}"`,
-              authorName: newestAuthor,
-            });
-          }
         }
 
+        // Silently fetch AI stats
         try {
           const statsRes = await fetchCloudAiStats();
           if (isMounted && statsRes.success) {
             setCloudStats(statsRes.stats);
           }
         } catch {
-          // stats optional
+          // ignore
         }
 
         if (isMounted) setCloudSyncStatus('connected');
       } catch (err) {
-        console.warn('Błąd synchronizacji chmury Neon:', err);
         if (isMounted) setCloudSyncStatus('error');
       }
     }
@@ -311,7 +265,7 @@ export function App() {
 
     const interval = setInterval(() => {
       void syncWithCloud(false);
-    }, 5000);
+    }, 6000);
 
     return () => {
       isMounted = false;
@@ -531,15 +485,12 @@ export function App() {
               </button>
             </div>
 
-            <div
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold shadow-2xs transition ${
-                cloudSyncStatus === 'connected'
-                  ? 'border-emerald-200/80 bg-emerald-50 text-emerald-700'
-                  : cloudSyncStatus === 'syncing'
-                    ? 'border-sky-200/80 bg-sky-50 text-sky-700'
-                    : 'border-amber-200/80 bg-amber-50 text-amber-700'
-              }`}
-              title="Status bazy Neon Postgres w chmurze"
+            {/* User & Cloud Status Combined Badge */}
+            <button
+              type="button"
+              onClick={() => setWelcomeModalOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 shadow-2xs hover:border-cyan-400 hover:text-cyan-700 transition"
+              title="Profil użytkownika i status bazy Neon w chmurze"
             >
               <span className="relative flex h-2 w-2">
                 <span
@@ -553,73 +504,56 @@ export function App() {
                   }`}
                 ></span>
               </span>
-              <span className="hidden sm:inline">Neon Sync</span>
-            </div>
+              <span>{userProfile?.name ? `Cześć, ${userProfile.name}` : 'Mój Profil'}</span>
+            </button>
 
+            {/* AI Quota Monitor */}
             <GeminiQuotaWidget logs={logs} cloudStats={cloudStats || undefined} />
 
-            <button
-              type="button"
-              onClick={() => setWelcomeModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 shadow-2xs hover:border-cyan-400 hover:text-cyan-700 transition"
-              title="Profil użytkownika (Kliknij, aby zmienić imię lub rolę)"
-            >
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-              <span>Cześć, {userProfile?.name || 'Zaloguj się'}!</span>
-            </button>
+            {/* Utility Toolbar */}
+            <div className="flex items-center gap-1 border-l border-slate-200/80 pl-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setAppTheme((t) => (t === 'light' ? 'warm' : t === 'warm' ? 'dark' : 'light'))
+                }
+                className="p-1.5 rounded-xl border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 transition"
+                title={`Przełącz motyw (Aktualny: ${appTheme})`}
+              >
+                {appTheme === 'dark' ? (
+                  <Moon className="h-4 w-4 text-indigo-400" />
+                ) : (
+                  <SunMedium className="h-4 w-4 text-amber-500" />
+                )}
+              </button>
 
-            <button
-              type="button"
-              onClick={() =>
-                setAppTheme((t) => (t === 'light' ? 'warm' : t === 'warm' ? 'dark' : 'light'))
-              }
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold shadow-2xs transition ${
-                appTheme === 'dark'
-                  ? 'border-indigo-500/40 bg-indigo-950/80 text-indigo-200'
-                  : appTheme === 'warm'
-                    ? 'border-amber-300/80 bg-amber-50 text-amber-900'
-                    : 'border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50'
-              }`}
-              title="Przełącz motyw: Jasny SaaS / Ciepły Papier / Ciemny Pro"
-            >
-              {appTheme === 'dark' ? (
-                <Moon className="h-3.5 w-3.5 text-indigo-400" />
-              ) : (
-                <SunMedium className="h-3.5 w-3.5 text-amber-500" />
-              )}
-              <span className="hidden sm:inline">
-                {appTheme === 'dark' ? 'Ciemny Pro' : appTheme === 'warm' ? 'Ciepły Papier' : 'Jasny SaaS'}
-              </span>
-            </button>
+              <button
+                type="button"
+                onClick={() => setLanguage((l) => (l === 'pl' ? 'en' : 'pl'))}
+                className="px-2.5 py-1.5 rounded-xl border border-slate-200/80 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                title="Przełącz język PL / EN"
+              >
+                {language.toUpperCase()}
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setLanguage((l) => (l === 'pl' ? 'en' : 'pl'))}
-              className="inline-flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50"
-              title="Przełącz język PL / EN"
-            >
-              <Globe className="h-3.5 w-3.5 text-indigo-600" />
-              <span>{language.toUpperCase()}</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => setIntegrationsOpen(true)}
+                className="p-1.5 rounded-xl border border-indigo-200/80 bg-indigo-50/80 text-indigo-700 hover:bg-indigo-100 transition"
+                title="Integracje (Gmail, WhatsApp, Meta)"
+              >
+                <Link2 className="h-4 w-4" />
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setIntegrationsOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200/80 bg-indigo-50/80 px-3 py-1.5 text-xs font-bold text-indigo-700 shadow-2xs hover:bg-indigo-100"
-              title="Połącz Gmail, WhatsApp API oraz Meta Business"
-            >
-              <Link2 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Integracje</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50"
-            >
-              <Settings className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{ui.settingsButton}</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="p-1.5 rounded-xl border border-slate-200/80 bg-white text-slate-700 hover:bg-slate-50 transition"
+                title="Ustawienia bota i API"
+              >
+                <Settings className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
 

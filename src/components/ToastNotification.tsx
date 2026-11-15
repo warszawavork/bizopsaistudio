@@ -30,7 +30,7 @@ const ToastCard: React.FC<{ toast: ToastItem; onDismiss: () => void }> = ({ toas
   const [progress, setProgress] = useState(100);
 
   useEffect(() => {
-    const duration = 5000;
+    const duration = 3200;
     const interval = 50;
     const step = (interval / duration) * 100;
 
@@ -49,48 +49,42 @@ const ToastCard: React.FC<{ toast: ToastItem; onDismiss: () => void }> = ({ toas
   }, [onDismiss]);
 
   return (
-    <div className="pointer-events-auto bg-slate-950/95 border border-emerald-500/40 backdrop-blur-xl shadow-2xl shadow-emerald-950/50 rounded-2xl p-4 text-slate-100 transform transition-all duration-300 animate-in slide-in-from-top-4 fade-in overflow-hidden relative">
-      <div className="flex items-start gap-3">
-        <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 shrink-0 mt-0.5">
+    <div className="pointer-events-auto bg-slate-950/95 border border-emerald-500/30 backdrop-blur-xl shadow-xl shadow-slate-950/60 rounded-2xl p-3.5 text-slate-100 transform transition-all duration-300 animate-in slide-in-from-top-4 fade-in overflow-hidden relative">
+      <div className="flex items-center gap-3">
+        <div className="p-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 shrink-0">
           {toast.type === 'sync' ? (
-            <Cloud className="w-5 h-5 animate-pulse" />
+            <Cloud className="w-4 h-4" />
           ) : (
-            <Sparkles className="w-5 h-5" />
+            <Sparkles className="w-4 h-4" />
           )}
         </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400">
+            <span className="text-xs font-bold text-emerald-400 truncate">
               {toast.title}
             </span>
-            {toast.category && (
-              <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full border border-slate-700">
-                {toast.category}
+            {toast.authorName && (
+              <span className="text-[10px] text-slate-400 truncate">
+                • {toast.authorName}
               </span>
             )}
           </div>
-          <p className="text-sm font-medium text-slate-100 mt-0.5 truncate">
+          <p className="text-xs text-slate-200 truncate mt-0.5">
             {toast.message}
           </p>
-          {toast.authorName && (
-            <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
-              Autor: {toast.authorName} • Na żywo z chmury
-            </p>
-          )}
         </div>
 
         <button
           onClick={onDismiss}
           className="text-slate-400 hover:text-slate-200 transition-colors p-1 rounded-lg hover:bg-slate-800/60 shrink-0"
         >
-          <X className="w-4 h-4" />
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
 
       {/* Progress bar */}
-      <div className="absolute bottom-0 left-0 right-0 h-1 bg-slate-800">
+      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-800">
         <div
           className="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 transition-all duration-75"
           style={{ width: `${progress}%` }}
