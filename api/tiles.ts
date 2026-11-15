@@ -13,15 +13,18 @@ interface KnowledgeTilePayload {
   authorName?: string;
 }
 
+const FALLBACK_NEON_URL =
+  'postgresql://neondb_owner:npg_IhW6l5JcHfgS@ep-green-art-zaw9ljx1-pooler.c-2.eu-west-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require';
+
 function getDb() {
   const connectionString =
     process.env.DATABASE_URL ||
     process.env.POSTGRES_URL ||
+    process.env.STORAGE_POSTGRES_URL ||
+    process.env.STORAGE_DATABASE_URL ||
     process.env.STORAGE_URL ||
-    '';
-  if (!connectionString) {
-    throw new Error('Missing DATABASE_URL / POSTGRES_URL environment variable.');
-  }
+    FALLBACK_NEON_URL;
+
   return neon(connectionString);
 }
 

@@ -213,6 +213,44 @@ export function App() {
         }
 
         const serverTiles = res.tiles;
+
+        // SMART SYNC & MERGE LOGIC:
+        // 1. If local has MORE tiles than cloud server (e.g. computer has 30+ tiles from yesterday):
+        // Automatically upload and sync all local tiles into Neon cloud!
+        if (currentTiles.length > serverTiles.length) {
+          const author = userProfile?.name
+            ? `${userProfile.name} (${userProfile.role.split('/')[0].trim()})`
+            : 'Bogdan';
+          await saveBatchCloudTiles(currentTiles, preset.id, author);
+          if (isMounted) {
+            setCloudSyncStatus('connected');
+            addFloatingToast({
+              type: 'sync',
+              title: 'Zsynchronizowano z Chmurą Neon',
+              message: `Wysłano ${currentTiles.length} kafelków z komputera do chmury!`,
+              authorName: author,
+            });
+          }
+          return;
+        }
+
+        // 2. If cloud has more tiles (e.g. phone syncing from cloud):
+        if (serverTiles.length > currentTiles.length) {
+          setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
+          if (isMounted) {
+            setCloudSyncStatus('connected');
+            if (!isInitial) {
+              addFloatingToast({
+                type: 'sync',
+                title: 'Pobrano wiedzę z chmury',
+                message: `Zaktualizowano ${serverTiles.length} kafelków zespołu`,
+              });
+            }
+          }
+          return;
+        }
+
+        // 3. Same count: check for content updates
         const localMap = new Map(currentTiles.map((t) => [t.id, t]));
         let hasNewOrUpdated = false;
         let newestTileTitle = '';
@@ -234,13 +272,13 @@ export function App() {
           }
         }
 
-        if (hasNewOrUpdated || (isInitial && serverTiles.length !== currentTiles.length)) {
+        if (hasNewOrUpdated) {
           setTilesByPreset((prev) => ({ ...prev, [preset.id]: serverTiles }));
           if (!isInitial) {
             addFloatingToast({
               type: 'updated',
               title: 'Wiedza zaktualizowana',
-              message: `Nowy kafelek: "${newestTileTitle || 'Reguła biznesowa'}"`,
+              message: `Zaktualizowano: "${newestTileTitle || 'Reguła biznesowa'}"`,
               authorName: newestAuthor,
             });
           }

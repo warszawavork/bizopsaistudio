@@ -380,6 +380,19 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
 
           <button
             type="button"
+            onClick={() => {
+              onTilesChange([...tiles]);
+              onMascotUpdate('happy', `Wysłano ${tiles.length} kafelków do chmury Neon!`);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs transition hover:brightness-110 active:scale-95"
+            title="Wyślij wszystkie kafelki z komputera do chmury Neon, aby natychmiast zsynchronizowały się na telefonie"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Wymuś Sync do Chmury ({tiles.length})
+          </button>
+
+          <button
+            type="button"
             disabled={checkingConsistency || activeTiles.length === 0}
             onClick={() => void handleRunConsistencyCheck()}
             className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-indigo-600 disabled:opacity-50"
