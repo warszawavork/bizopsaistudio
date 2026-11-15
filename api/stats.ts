@@ -252,19 +252,23 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
     if (req.method === 'POST') {
       const body = await readJsonBody(req);
 
-      if (body.action === 'clear_old_logs') {
-        const deleted = await sql`
-          DELETE FROM bizops_ai_logs
-          WHERE timestamp < date_trunc('day', NOW())
-          RETURNING id;
-        `;
+      if (body.action === 'clear_old_logs' || body.action === 'purge_logs') {
+        const purgeAll = body.action === 'purge_logs' || body.all === true;
+        const deleted = purgeAll
+          ? await sql`DELETE FROM bizops_ai_logs RETURNING id;`
+          : await sql`DELETE FROM bizops_ai_logs WHERE timestamp < date_trunc('day', NOW()) RETURNING id;`;
+
         sendJson(res, 200, {
           success: true,
           deletedCount: deleted.length,
           message:
             deleted.length > 0
-              ? `Wyczyszczono ${deleted.length} archiwalnych logów AI sprzed dzisiejszego dnia.`
-              : 'Brak archiwalnych logów sprzed dzisiejszego dnia do usunięcia.',
+              ? (purgeAll
+                  ? `Opróżniono bazę logów: usunięto ${deleted.length} wpisów telemetrii AI.`
+                  : `Wyczyszczono ${deleted.length} archiwalnych logów AI sprzed dzisiejszego dnia.`)
+              : (purgeAll
+                  ? 'Baza logów AI jest już całkowicie pusta.'
+                  : 'Brak archiwalnych logów sprzed dzisiejszego dnia do usunięcia.'),
         });
         return;
       }

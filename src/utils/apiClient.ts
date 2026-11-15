@@ -425,8 +425,8 @@ export async function recordCloudAiLog(log: any): Promise<{ success: boolean }> 
   return postJson('/api/stats', log);
 }
 
-export async function clearOldCloudAiLogs(): Promise<{ success: boolean; message?: string }> {
-  return postJson('/api/stats', { action: 'clear_old_logs' });
+export async function clearOldCloudAiLogs(all = false): Promise<{ success: boolean; message?: string }> {
+  return postJson('/api/stats', { action: all ? 'purge_logs' : 'clear_old_logs', all });
 }
 
 export async function fetchCloudInbox(
