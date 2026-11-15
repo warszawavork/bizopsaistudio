@@ -6,11 +6,13 @@ import {
   Clock,
   Database,
   Download,
+  GitBranch,
   HardDrive,
   KeyRound,
   Loader2,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Upload,
   UserCheck,
@@ -24,6 +26,7 @@ import {
   getStoredAdvisorSignature,
   getStoredCustomKey,
   getStoredIntegrationsConfig,
+  runLangGraphWorkflow,
   setStoredAdvisorSignature,
   setStoredCustomKey,
   setStoredIntegrationsConfig,
@@ -64,7 +67,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   tilesCount = 0,
   onBackupRestored,
 }) => {
-  const [activeTab, setActiveTab] = useState<'quotas' | 'api' | 'signature' | 'backup'>('quotas');
+  const [activeTab, setActiveTab] = useState<'quotas' | 'api' | 'langgraph' | 'signature' | 'backup'>('quotas');
+  const [testingLangGraph, setTestingLangGraph] = useState(false);
+  const [langGraphTestLogs, setLangGraphTestLogs] = useState<string[]>([]);
   const [customKey, setCustomKey] = useState(getStoredCustomKey());
   const [signature, setSignature] = useState<AdvisorSignature>(getStoredAdvisorSignature);
   const [testing, setTesting] = useState(false);
@@ -324,6 +329,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <KeyRound className="h-3.5 w-3.5 text-amber-400" />
             Modele & Klucz Gemini AI
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('langgraph')}
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition ${
+              activeTab === 'langgraph'
+                ? 'bg-slate-900 text-white shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <GitBranch className="h-3.5 w-3.5 text-violet-400" />
+            LangGraph (StateGraph)
           </button>
           <button
             type="button"
@@ -652,6 +669,124 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Zapisz klucz
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ZAKŁADKA: LANGGRAPH (STATEGRAPH ORCHESTRATION) */}
+        {activeTab === 'langgraph' && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50/80 via-white to-indigo-50/60 p-4 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <GitBranch className="h-4 w-4 text-violet-600" />
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-violet-950">
+                    Architektura LangGraph v1.7 • Cykliczny StateGraph
+                  </h3>
+                </div>
+                <span className="rounded-full bg-violet-100 px-2.5 py-0.5 text-[10px] font-bold text-violet-800">
+                  @langchain/langgraph
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-600 leading-relaxed">
+                W BizOps AI Studio proces wieloagentowy opiera się o oficjalny framework <strong>LangGraph</strong>.
+                Zamiast prostego promptu, zadanie przechodzi przez 3 wyspecjalizowane węzły z pętlą korygującą (Conditional Edges).
+              </p>
+
+              {/* Wizualny Schemat Węzłów */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <div className="rounded-xl border border-violet-100 bg-white p-3 space-y-1 shadow-2xs">
+                  <div className="flex items-center justify-between font-bold text-violet-900">
+                    <span>1. Node: planner</span>
+                    <span className="text-[10px] bg-violet-50 px-1.5 py-0.5 rounded text-violet-700">START</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Główny Analityk: dekomponuje zapytanie klienta i dobiera wytyczne z Bazy Wiedzy.
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-violet-100 bg-white p-3 space-y-1 shadow-2xs">
+                  <div className="flex items-center justify-between font-bold text-indigo-900">
+                    <span>2. Node: drafter</span>
+                    <span className="text-[10px] bg-indigo-50 px-1.5 py-0.5 rounded text-indigo-700">ITERACJA</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Doradca Handlowy: generuje propozycję cenową i ofertę handlową w oparciu o plan.
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-violet-100 bg-white p-3 space-y-1 shadow-2xs">
+                  <div className="flex items-center justify-between font-bold text-rose-900">
+                    <span>3. Node: critic</span>
+                    <span className="text-[10px] bg-rose-50 px-1.5 py-0.5 rounded text-rose-700">AUDYT</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Audytor Ryzyka: weryfikuje VAT, terminy i marże. Jeśli wykryje błąd ➔ zawraca do Draftera!
+                  </p>
+                </div>
+              </div>
+
+              {/* Parametry Silnika */}
+              <div className="rounded-xl bg-slate-900 text-slate-200 p-3.5 text-xs font-mono space-y-2">
+                <div className="flex items-center justify-between text-violet-300 font-bold">
+                  <span>PARAMETRY MASZYNY STANÓW (STATE ANNOTATION):</span>
+                  <span>Max loop: 2 cykle</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+                  <div>• Model agentów: <strong className="text-white">Gemini 3.8 Flash</strong></div>
+                  <div>• Krawędzie warunkowe: <strong className="text-white">Critic ➔ Drafter / END</strong></div>
+                  <div>• Czas wykonania: <strong className="text-emerald-400">~800 - 1800 ms</strong></div>
+                  <div>• Środowisko: <strong className="text-white">Vercel Serverless Node.js</strong></div>
+                </div>
+              </div>
+
+              {/* Przycisk Testu LangGraph na Żywo */}
+              <div className="pt-2 border-t border-violet-100 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] text-slate-500">
+                  Przetestuj pełny cykl StateGraph (Planner ➔ Drafter ➔ Critic):
+                </span>
+                <button
+                  type="button"
+                  disabled={testingLangGraph}
+                  onClick={async () => {
+                    setTestingLangGraph(true);
+                    setLangGraphTestLogs([]);
+                    try {
+                      const res = await runLangGraphWorkflow({
+                        task: 'Test orkiestracji LangGraph: wycena domu 73m2 całorocznego',
+                        knowledgeContext: 'Standard WT2021, cena 229 950 zł netto + 8% VAT dla osób fizycznych.',
+                      });
+                      setLangGraphTestLogs(res.logs || []);
+                      setTestResult({
+                        ok: true,
+                        text: `LangGraph v${res.version} wykonał zadanie w ${res.executionTimeMs} ms (${res.iterations} iteracje pętli). Wynik: ${res.critique}`,
+                      });
+                    } catch (e) {
+                      setTestResult({
+                        ok: false,
+                        text: e instanceof Error ? e.message : 'Błąd testu LangGraph',
+                      });
+                    } finally {
+                      setTestingLangGraph(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-violet-700 transition disabled:opacity-50"
+                >
+                  {testingLangGraph ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  Uruchom Diagnostykę LangGraph
+                </button>
+              </div>
+
+              {/* Logi diagnostyki */}
+              {langGraphTestLogs.length > 0 && (
+                <div className="rounded-xl bg-slate-950 border border-violet-500/30 p-3 text-[11px] font-mono text-violet-300 space-y-1">
+                  <p className="font-bold text-white border-b border-slate-800 pb-1">Logi wykonania StateGraph:</p>
+                  {langGraphTestLogs.map((l, li) => (
+                    <p key={li}>{l}</p>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

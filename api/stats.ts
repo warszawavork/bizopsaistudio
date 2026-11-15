@@ -160,7 +160,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
             coalesce(sum(total_tokens), 0)::int as "todayTokens",
             coalesce(avg(latency_ms), 0)::int as "avgLatency"
           FROM bizops_ai_logs
-          WHERE timestamp >= date_trunc('day', NOW());
+          WHERE timestamp >= date_trunc('day', NOW() AT TIME ZONE 'Europe/Warsaw') AT TIME ZONE 'Europe/Warsaw';
         `,
         sql`
           SELECT 
