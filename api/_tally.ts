@@ -380,7 +380,7 @@ export function evaluateTallyQuoteFromLiveData(
   // Jeśli klient nie podał metrażu (np. opisał tylko układ pokoi góra/dół), przyjmujemy orientacyjnie 50 m² dla piętrowego/poddasza lub 35 m² dla parteru
   let footprintM2: number = explicitArea ?? (floorMult > 1 ? 50 : 35);
 
-  if (explicitArea && rawInput.areaIsTotalUsable && floorMult > 1) {
+  if (explicitArea && !rawInput.areaEstimatedByBot && rawInput.areaIsTotalUsable && floorMult > 1) {
     footprintM2 = Math.max(15, Math.round(explicitArea / floorMult));
   }
 
