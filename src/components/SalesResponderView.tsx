@@ -22,17 +22,22 @@ import {
   MessageSquarePlus,
   Mic,
   MicOff,
+  PanelLeftOpen,
   Plus,
   Printer,
   RefreshCw,
   RotateCcw,
   ShieldAlert,
   Sparkles,
+  Star,
   Trash2,
   Webhook,
+  X,
 } from 'lucide-react';
 import type {
   AppLanguage,
+  ClientChatMessage,
+  ClientChatThread,
   CrmDeal,
   InboxFeedItem,
   IndustryPreset,
@@ -58,8 +63,9 @@ import {
   translateSalesReply,
 } from '../utils/apiClient';
 import { copyRichEmailToClipboard, formatStructuredReplyText } from '../utils/emailExport';
-import { idbGetWorkspaceItem } from '../utils/offlineDb';
+import { idbGetWorkspaceItem, idbSaveWorkspaceItem } from '../utils/offlineDb';
 import { exportSalesReplyToPdf, printCleanReportHtml } from '../utils/pdfExport';
+import { ClientChatsSidebar } from './ClientChatsSidebar';
 import { TallyConfiguratorModal } from './TallyConfiguratorModal';
 import { WebSourcesPanel } from './WebSourcesPanel';
 
@@ -88,6 +94,8 @@ interface SalesResponderViewProps {
 }
 
 const REPLY_HISTORY_KEY = 'bizops_reply_history_v1';
+const CHAT_THREADS_KEY = 'bizops_chat_threads_v1';
+const ACTIVE_CHAT_KEY = 'bizops_active_chat_v1';
 const QUICK_LINKS_KEY = 'bizops_quick_links_v1';
 const OBJECTIONS_KEY = 'bizops_objections_playbook_v1';
 const INBOX_FEED_KEY = 'bizops_unified_inbox_v1';
@@ -258,6 +266,73 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       return [];
     }
   });
+  const [chatThreads, setChatThreads] = useState<ClientChatThread[]>(() => {
+    try {
+      const raw = localStorage.getItem(`${CHAT_THREADS_KEY}_${preset.id}`);
+      return raw ? (JSON.parse(raw) as ClientChatThread[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [activeChatId, setActiveChatId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(`${ACTIVE_CHAT_KEY}_${preset.id}`);
+    } catch {
+      return null;
+    }
+  });
+  const [showChatsSidebar, setShowChatsSidebar] = useState<boolean>(true);
+  const [savingChatsCloud, setSavingChatsCloud] = useState<boolean>(false);
+
+  const activeChat = chatThreads.find((c) => c.id === activeChatId) ?? null;
+
+  const pruneThreadsForStorage = (list: ClientChatThread[]): ClientChatThread[] => {
+    // Gwiazdkowane czaty sa chronione na stale; starsze niegwiazdkowane trzymamy do 45 sztuk
+    const starred = list.filter((t) => t.starred);
+    const unstarred = [...list.filter((t) => !t.starred)]
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .slice(0, 45);
+    return [...starred, ...unstarred];
+  };
+
+  const persistChatThreads = (nextRaw: ClientChatThread[]) => {
+    const next = pruneThreadsForStorage(nextRaw);
+    setChatThreads(next);
+    try {
+      localStorage.setItem(`${CHAT_THREADS_KEY}_${preset.id}`, JSON.stringify(next));
+    } catch {
+      // Fallback gdyby localStorage byl pelny: zachowaj tylko ostatnia pelna odpowiedz w watku
+      try {
+        const compact = next.map((c) => ({
+          ...c,
+          messages: c.messages.map((m, idx) =>
+            idx >= c.messages.length - 2 ? m : { ...m, reply: undefined }
+          ),
+        }));
+        localStorage.setItem(`${CHAT_THREADS_KEY}_${preset.id}`, JSON.stringify(compact));
+      } catch {
+        // ignore
+      }
+    }
+    void idbSaveWorkspaceItem(preset.id, 'chat_threads', next);
+    setSavingChatsCloud(true);
+    void saveCloudWorkspaceKey(preset.id, 'chat_threads', next, authorName).finally(() => {
+      setSavingChatsCloud(false);
+    });
+  };
+
+  const selectActiveChatId = (nextId: string | null) => {
+    setActiveChatId(nextId);
+    try {
+      if (nextId) {
+        localStorage.setItem(`${ACTIVE_CHAT_KEY}_${preset.id}`, nextId);
+      } else {
+        localStorage.removeItem(`${ACTIVE_CHAT_KEY}_${preset.id}`);
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   const refreshCloudInbox = async () => {
     setInboxLoading(true);
@@ -285,15 +360,28 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   useEffect(() => {
     let cancelled = false;
     const hydrateWorkspace = async () => {
-      const [idbLinks, idbObjs, idbHist] = await Promise.all([
+      try {
+        const localRaw = localStorage.getItem(`${CHAT_THREADS_KEY}_${preset.id}`);
+        if (localRaw) setChatThreads(JSON.parse(localRaw) as ClientChatThread[]);
+        const savedActive = localStorage.getItem(`${ACTIVE_CHAT_KEY}_${preset.id}`);
+        if (savedActive) setActiveChatId(savedActive);
+      } catch {
+        // ignore
+      }
+
+      const [idbLinks, idbObjs, idbHist, idbChats] = await Promise.all([
         idbGetWorkspaceItem<QuickLinkItem[]>(preset.id, 'quick_links'),
         idbGetWorkspaceItem<ObjectionPlaybookItem[]>(preset.id, 'objections'),
         idbGetWorkspaceItem<ReplyHistoryItem[]>(preset.id, 'reply_history'),
+        idbGetWorkspaceItem<ClientChatThread[]>(preset.id, 'chat_threads'),
       ]);
       if (cancelled) return;
       if (idbLinks?.payload) setQuickLinks(idbLinks.payload);
       if (idbObjs?.payload?.length) setObjections(idbObjs.payload);
       if (idbHist?.payload) setReplyHistory(idbHist.payload);
+      if (Array.isArray(idbChats?.payload) && idbChats.payload.length > 0) {
+        setChatThreads(idbChats.payload);
+      }
 
       try {
         const cloud = await fetchCloudWorkspace(preset.id);
@@ -314,6 +402,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
           const hist = cloud.state.reply_history as ReplyHistoryItem[];
           setReplyHistory(hist);
           localStorage.setItem(`${REPLY_HISTORY_KEY}_${preset.id}`, JSON.stringify(hist));
+        }
+        if (Array.isArray(cloud.state.chat_threads)) {
+          const cloudChats = cloud.state.chat_threads as ClientChatThread[];
+          setChatThreads(cloudChats);
+          try {
+            localStorage.setItem(`${CHAT_THREADS_KEY}_${preset.id}`, JSON.stringify(cloudChats));
+          } catch {
+            // ignore
+          }
+          void idbSaveWorkspaceItem(preset.id, 'chat_threads', cloudChats);
         }
       } catch {
         // Offline gracefully uses IDB / localStorage
@@ -428,6 +526,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   const activeTilesCount = tiles.filter((t) => t.enabled).length;
 
+  const lastChatClientMsg = activeChat
+    ? [...activeChat.messages].reverse().find((m) => m.role === 'client')?.text || ''
+    : '';
+
   const handleGenerate = async (
     overrideMessage?: string,
     overrideNote?: string,
@@ -436,7 +538,9 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     overrideChannel?: 'email' | 'sms',
     followUpDaysSilent?: number
   ) => {
-    const msgToUse = overrideMessage ?? clientMessage;
+    const rawMsgInput = (overrideMessage ?? clientMessage).trim();
+    const usedFallbackFromChat = !rawMsgInput && Boolean(lastChatClientMsg);
+    const msgToUse = rawMsgInput || lastChatClientMsg;
     const noteToUse = overrideNote ?? advisorNotes;
     const langToUse = overrideLang ?? replyLanguage;
     const toneToUse = overrideTone ?? tone;
@@ -452,13 +556,18 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       const includedLinks = quickLinks
         .filter((l) => selectedLinkIds.includes(l.id))
         .map((l) => ({ label: l.label, url: l.url }));
+
+      const baseThread: Array<{ role: 'client' | 'advisor'; text: string }> = activeChat
+        ? activeChat.messages.map((m) => ({ role: m.role, text: m.text }))
+        : threadHistory;
+
       const effectiveThread =
-        followUpDaysSilent && followUpDaysSilent > 0 && editableBody.trim() && threadHistory.length === 0
+        followUpDaysSilent && followUpDaysSilent > 0 && editableBody.trim() && baseThread.length === 0
           ? [
               { role: 'client' as const, text: msgToUse },
               { role: 'advisor' as const, text: editableBody.trim() },
             ]
-          : threadHistory;
+          : baseThread;
 
       const result = await generateSalesReply({
         companyName: preset.name,
@@ -478,9 +587,90 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         followUpDaysSilent,
       });
 
+      const formattedBody = formatStructuredReplyText(result.replyBody);
       onReplyComplete(result);
       setEditableSubject(result.subject);
-      setEditableBody(formatStructuredReplyText(result.replyBody));
+      setEditableBody(formattedBody);
+
+      // Zapisz wiadomosc klienta i odpowiedz bota w aktywnym czacie (lub utworz nowy czat)
+      const nowIso = new Date().toISOString();
+      const ts = Date.now();
+      const detectedName = (result.detectedClientName || '').trim();
+      const detectedContact = result.detectedRecipientEmail || result.detectedRecipientPhone || '';
+      const newMessages: ClientChatMessage[] = usedFallbackFromChat
+        ? [
+            {
+              id: `msg_a_${ts}`,
+              role: 'advisor',
+              text: formattedBody,
+              subject: result.subject,
+              createdAt: nowIso,
+              reply: result,
+            },
+          ]
+        : [
+            {
+              id: `msg_c_${ts}`,
+              role: 'client',
+              text: msgToUse,
+              createdAt: nowIso,
+            },
+            {
+              id: `msg_a_${ts + 1}`,
+              role: 'advisor',
+              text: formattedBody,
+              subject: result.subject,
+              createdAt: nowIso,
+              reply: result,
+            },
+          ];
+
+      if (activeChat) {
+        const isGenericName =
+          !activeChat.clientName ||
+          activeChat.clientName === 'Nowy klient' ||
+          activeChat.clientName === 'Klient';
+        const resolvedName =
+          isGenericName && detectedName && detectedName !== 'Klient'
+            ? detectedName
+            : activeChat.clientName;
+        const updatedThreads = chatThreads.map((c) =>
+          c.id === activeChat.id
+            ? {
+                ...c,
+                clientName: resolvedName || 'Klient',
+                clientContact: c.clientContact || detectedContact || undefined,
+                channel: channelToUse === 'sms' ? ('whatsapp' as const) : ('email' as const),
+                temperature: result.buyingSignal?.temperature ?? c.temperature,
+                updatedAt: nowIso,
+                messages: [...c.messages, ...newMessages],
+              }
+            : c
+        );
+        persistChatThreads(updatedThreads);
+        setThreadHistory([...effectiveThread, ...newMessages.map((m) => ({ role: m.role, text: m.text }))]);
+      } else {
+        const newChatId = `chat_${ts}`;
+        const newThread: ClientChatThread = {
+          id: newChatId,
+          clientName: detectedName && detectedName !== 'Klient' ? detectedName : `Klient ${new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}`,
+          clientContact: detectedContact || undefined,
+          channel: channelToUse === 'sms' ? 'whatsapp' : 'email',
+          starred: false,
+          temperature: result.buyingSignal?.temperature,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          messages: newMessages,
+        };
+        persistChatThreads([newThread, ...chatThreads]);
+        selectActiveChatId(newChatId);
+        setThreadHistory(newMessages.map((m) => ({ role: m.role, text: m.text })));
+      }
+
+      if (!usedFallbackFromChat && !overrideMessage) {
+        setClientMessage('');
+      }
+      setAdvisorNotes('');
 
       setReplyHistory((prev) => {
         const next: ReplyHistoryItem[] = [
@@ -627,15 +817,125 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     rec.start();
   };
 
-  const handleContinueThread = () => {
-    if (!clientMessage.trim() && !editableBody.trim()) return;
-    const nextEntries: Array<{ role: 'client' | 'advisor'; text: string }> = [...threadHistory];
-    if (clientMessage.trim()) nextEntries.push({ role: 'client', text: clientMessage.trim() });
-    if (editableBody.trim()) nextEntries.push({ role: 'advisor', text: editableBody.trim() });
-    setThreadHistory(nextEntries);
+  const handleSelectChat = (chatId: string) => {
+    const found = chatThreads.find((c) => c.id === chatId);
+    if (!found) return;
+    selectActiveChatId(chatId);
     setClientMessage('');
     setAdvisorNotes('');
-    setChannelStatus('Zapisano poprzednią wymianę w wątku — wklej teraz nową wiadomość klienta.');
+    setThreadHistory(found.messages.map((m) => ({ role: m.role, text: m.text })));
+    const lastReplyMsg = [...found.messages].reverse().find((m) => m.role === 'advisor' && m.reply);
+    if (lastReplyMsg?.reply) {
+      onReplyComplete(lastReplyMsg.reply);
+    }
+    setChannelStatus(
+      `Otwarto czat: ${found.clientName} (${found.messages.length} wiadomości w pamięci AI).`
+    );
+  };
+
+  const handleNewChat = () => {
+    const nowIso = new Date().toISOString();
+    const id = `chat_${Date.now()}`;
+    const blank: ClientChatThread = {
+      id,
+      clientName: 'Nowy klient',
+      starred: false,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      messages: [],
+    };
+    persistChatThreads([blank, ...chatThreads]);
+    selectActiveChatId(id);
+    setClientMessage('');
+    setAdvisorNotes('');
+    setThreadHistory([]);
+    setChannelStatus('Utworzono nowy czat klienta — wklej pierwszą wiadomość.');
+  };
+
+  const handleToggleChatStar = (chatId: string) => {
+    let starredNow = false;
+    const next = chatThreads.map((c) => {
+      if (c.id !== chatId) return c;
+      starredNow = !c.starred;
+      return { ...c, starred: starredNow };
+    });
+    persistChatThreads(next);
+    setChannelStatus(
+      starredNow
+        ? '★ Oznaczono czat gwiazdką — zapisano trwale na górze listy i w chmurze Neon.'
+        : 'Odpięto gwiazdkę z czatu.'
+    );
+  };
+
+  const handleRenameChat = (chatId: string, nextName: string) => {
+    const clean = nextName.trim();
+    if (!clean) return;
+    const next = chatThreads.map((c) => (c.id === chatId ? { ...c, clientName: clean } : c));
+    persistChatThreads(next);
+  };
+
+  const handleDeleteChat = (chatId: string) => {
+    const next = chatThreads.filter((c) => c.id !== chatId);
+    persistChatThreads(next);
+    if (activeChatId === chatId) {
+      selectActiveChatId(null);
+      setThreadHistory([]);
+      setClientMessage('');
+      setAdvisorNotes('');
+    }
+    setChannelStatus('Usunięto wybrany czat z historii.');
+  };
+
+  const handleDeleteChatMessage = (chatId: string, msgId: string) => {
+    const next = chatThreads.map((c) => {
+      if (c.id !== chatId) return c;
+      const filteredMsgs = c.messages.filter((m) => m.id !== msgId);
+      return { ...c, messages: filteredMsgs };
+    });
+    persistChatThreads(next);
+    if (activeChatId === chatId) {
+      const updated = next.find((c) => c.id === chatId);
+      setThreadHistory((updated?.messages || []).map((m) => ({ role: m.role, text: m.text })));
+    }
+    setChannelStatus('Usunięto wybraną wiadomość z kontekstu tego czatu.');
+  };
+
+  const handleContinueThread = () => {
+    const msg = clientMessage.trim();
+    if (!msg) return;
+    const nowIso = new Date().toISOString();
+    const newEntry: ClientChatMessage = {
+      id: `msg_c_${Date.now()}`,
+      role: 'client',
+      text: msg,
+      createdAt: nowIso,
+    };
+
+    if (activeChat) {
+      const updated = chatThreads.map((c) =>
+        c.id === activeChat.id
+          ? { ...c, updatedAt: nowIso, messages: [...c.messages, newEntry] }
+          : c
+      );
+      persistChatThreads(updated);
+      setThreadHistory([...activeChat.messages.map((m) => ({ role: m.role, text: m.text })), { role: 'client', text: msg }]);
+    } else {
+      const id = `chat_${Date.now()}`;
+      const newChat: ClientChatThread = {
+        id,
+        clientName: 'Nowy klient',
+        starred: false,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        messages: [newEntry],
+      };
+      persistChatThreads([newChat, ...chatThreads]);
+      selectActiveChatId(id);
+      setThreadHistory([{ role: 'client', text: msg }]);
+    }
+    setClientMessage('');
+    setAdvisorNotes('');
+    setChannelStatus('Dodano wiadomość klienta do historii wątku — możesz wkleić kolejną.');
   };
 
   const handleAddQuickLink = () => {
@@ -723,10 +1023,49 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     inboxFilter === 'pending' ? inboxItems.filter((i) => !i.handled) : inboxItems;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-12">
-      {/* LEFT COLUMN: Wklej wiadomość od klienta */}
-      <div className="space-y-4 lg:col-span-5">
-        <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-6 space-y-4">
+    <div className="space-y-4">
+      {!showChatsSidebar && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200/80 bg-white px-4 py-2 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setShowChatsSidebar(true)}
+            className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-600 transition"
+          >
+            <PanelLeftOpen className="h-3.5 w-3.5" />
+            Pokaż czaty klientów ({chatThreads.length})
+          </button>
+          {activeChat && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-bold text-slate-800">Aktywny czat: {activeChat.clientName}</span>
+              <span className="rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
+                {activeChat.messages.length} wiad.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="grid gap-5 lg:grid-cols-12 items-start">
+        {/* SIDEBAR COLUMN: Lista czatów klientów */}
+        {showChatsSidebar && (
+          <div className="lg:col-span-3">
+            <ClientChatsSidebar
+              threads={chatThreads}
+              activeChatId={activeChatId}
+              savingCloud={savingChatsCloud}
+              onSelectChat={handleSelectChat}
+              onNewChat={handleNewChat}
+              onToggleStar={handleToggleChatStar}
+              onRenameChat={handleRenameChat}
+              onDeleteChat={handleDeleteChat}
+              onCollapse={() => setShowChatsSidebar(false)}
+            />
+          </div>
+        )}
+
+        {/* CENTER COLUMN: Czat + Wklej wiadomość od klienta */}
+        <div className={`space-y-4 ${showChatsSidebar ? 'lg:col-span-4' : 'lg:col-span-5'}`}>
+        <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-5 space-y-4">
           {/* Unified Inbox Toggle Bar */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/80 via-violet-50/60 to-emerald-50/60 px-3 py-2">
             <button
@@ -735,26 +1074,21 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               className="inline-flex items-center gap-1.5 text-[11px] font-bold text-indigo-900 hover:text-indigo-700"
             >
               <Inbox className="h-3.5 w-3.5 text-indigo-600" />
-              Skrzynka Przychodząca ({pendingInboxCount} nowych / {inboxItems.length})
+              Skrzynka ({pendingInboxCount} nowych / {inboxItems.length})
               <span className="rounded-full bg-white px-1.5 py-0.5 text-[9px] font-extrabold text-indigo-600 shadow-2xs">
                 {showInbox ? 'Ukryj' : 'Rozwiń'}
               </span>
             </button>
             <div className="flex items-center gap-1.5">
-              {threadHistory.length > 0 && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
-                  Wątek: {Math.max(1, Math.round(threadHistory.length / 2))} wym.
-                </span>
-              )}
               <button
                 type="button"
                 onClick={handleContinueThread}
-                disabled={!clientMessage.trim() && !editableBody.trim()}
+                disabled={!clientMessage.trim()}
                 className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-[10px] font-bold text-slate-700 shadow-2xs hover:text-indigo-700 disabled:opacity-40"
-                title="Zapamiętaj obecną rozmowę i wklej kolejną wiadomość od tego samego klienta"
+                title="Wklej wiadomość tylko do pamięci wątku (bez generowania odpowiedzi AI)"
               >
                 <MessageSquarePlus className="h-3 w-3 text-indigo-600" />
-                Kontynuuj wątek
+                Dodaj do czatu
               </button>
             </div>
           </div>
@@ -825,8 +1159,37 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       <button
                         type="button"
                         onClick={() => {
+                          const normalizedSender = item.senderName.trim().toLowerCase();
+                          const existing = chatThreads.find(
+                            (c) =>
+                              (item.senderContact && c.clientContact === item.senderContact) ||
+                              (normalizedSender && c.clientName.trim().toLowerCase() === normalizedSender)
+                          );
+                          if (existing) {
+                            handleSelectChat(existing.id);
+                          } else {
+                            const nowIso = new Date().toISOString();
+                            const newId = `chat_${Date.now()}`;
+                            const created: ClientChatThread = {
+                              id: newId,
+                              clientName: item.senderName || 'Klient ze Skrzynki',
+                              clientContact: item.senderContact || undefined,
+                              channel:
+                                item.source === 'whatsapp'
+                                  ? 'whatsapp'
+                                  : item.source === 'tally'
+                                    ? 'tally'
+                                    : 'email',
+                              starred: false,
+                              createdAt: nowIso,
+                              updatedAt: nowIso,
+                              messages: [],
+                            };
+                            persistChatThreads([created, ...chatThreads]);
+                            selectActiveChatId(newId);
+                            setThreadHistory([]);
+                          }
                           setClientMessage(item.fullText);
-                          setThreadHistory([]);
                           setShowInbox(false);
                         }}
                         className="min-w-0 flex-1 text-left"
@@ -886,13 +1249,106 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             </div>
           )}
 
+          {/* Aktywny czat i historia rozmowy */}
+          {activeChat && (
+            <div className="rounded-2xl border border-indigo-200/80 bg-indigo-50/40 p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleChatStar(activeChat.id)}
+                    className={`rounded-lg p-1 transition ${
+                      activeChat.starred
+                        ? 'bg-amber-100 text-amber-500'
+                        : 'bg-white text-slate-400 hover:text-amber-500 border border-slate-200'
+                    }`}
+                    title={activeChat.starred ? 'Zapisany gwiazdką ★' : 'Oznacz ten czat gwiazdką ★'}
+                  >
+                    <Star className={`h-3.5 w-3.5 ${activeChat.starred ? 'fill-amber-400 text-amber-500' : ''}`} />
+                  </button>
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-extrabold text-slate-900">
+                      {activeChat.clientName}
+                    </p>
+                    {activeChat.clientContact && (
+                      <p className="truncate text-[10px] text-slate-500">{activeChat.clientContact}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-indigo-700 border border-indigo-100">
+                    Pamięć AI: {activeChat.messages.length} wiad.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleNewChat}
+                    className="rounded-lg bg-white px-2 py-0.5 text-[10px] font-bold text-slate-700 border border-slate-200 hover:border-indigo-300 hover:text-indigo-700"
+                    title="Nowy czat"
+                  >
+                    + Nowy
+                  </button>
+                </div>
+              </div>
+
+              {activeChat.messages.length > 0 && (
+                <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
+                  {activeChat.messages.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`group relative rounded-xl border px-2.5 py-2 text-[11px] leading-snug ${
+                        m.role === 'client'
+                          ? 'border-slate-200 bg-white text-slate-800 mr-4'
+                          : 'border-indigo-200 bg-indigo-50/90 text-indigo-950 ml-4'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-0.5">
+                        <span className="text-[9px] font-extrabold uppercase tracking-wide text-slate-500">
+                          {m.role === 'client' ? 'Klient' : 'Bot / Ty'} •{' '}
+                          {new Date(m.createdAt).toLocaleTimeString('pl-PL', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {m.role === 'advisor' && m.reply && (
+                            <button
+                              type="button"
+                              onClick={() => onReplyComplete(m.reply!)}
+                              className="rounded px-1.5 py-0.5 text-[9px] font-bold text-indigo-700 hover:bg-indigo-100"
+                              title="Wczytaj tę odpowiedź do prawego podglądu"
+                            >
+                              Podgląd →
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteChatMessage(activeChat.id, m.id)}
+                            className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition"
+                            title="Usuń tę wiadomość z historii czatu"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="whitespace-pre-wrap line-clamp-3">{m.text}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex items-start justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold text-slate-900">
-                1. Wklej mail lub zapytanie od klienta
+                {activeChat && activeChat.messages.length > 0
+                  ? '1. Wklej kolejną wiadomość od klienta'
+                  : '1. Wklej mail lub zapytanie od klienta'}
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                AI połączy Twoją Bazę Wiedzy ({activeTilesCount} reguł) oraz informacje rynkowe z internetu.
+                {activeChat && activeChat.messages.length > 0
+                  ? `Bot pamięta cały powyższy wątek (${activeChat.messages.length} wiad.) + Bazę Wiedzy (${activeTilesCount} reguł).`
+                  : `AI połączy Twoją Bazę Wiedzy (${activeTilesCount} reguł) oraz informacje rynkowe z internetu.`}
               </p>
             </div>
             <button
@@ -900,13 +1356,12 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               onClick={() => {
                 setClientMessage('');
                 setAdvisorNotes('');
-                setThreadHistory([]);
               }}
               className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
-              title="Wyczyść pole i wątek"
+              title="Wyczyść pole tekstowe"
             >
               <RotateCcw className="h-3 w-3" />
-              Wyczyść
+              Wyczyść pole
             </button>
           </div>
 
@@ -916,10 +1371,14 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               Treść wiadomości klienta
             </label>
             <textarea
-              rows={9}
+              rows={activeChat && activeChat.messages.length > 0 ? 5 : 8}
               value={clientMessage}
               onChange={(e) => setClientMessage(e.target.value)}
-              placeholder="Wklej tutaj mail od klienta, zapytanie z formularza WWW albo wiadomość z WhatsApp..."
+              placeholder={
+                activeChat && activeChat.messages.length > 0
+                  ? 'Wklej kolejną odpowiedź klienta w tym czacie — bot uwzględni to, co było wcześniej...'
+                  : 'Wklej tutaj mail od klienta, zapytanie z formularza WWW albo wiadomość z WhatsApp...'
+              }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
             />
           </div>
@@ -1304,7 +1763,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
           <div className="space-y-2">
             <button
               type="button"
-              disabled={loading || !clientMessage.trim()}
+              disabled={loading || (!clientMessage.trim() && !lastChatClientMsg)}
               onClick={() => void handleGenerate()}
               className="shimmer-bar flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-indigo-700 px-5 py-3.5 text-xs font-bold text-white shadow-md shadow-indigo-950/15 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-indigo-600/25 disabled:translate-y-0 disabled:opacity-50"
             >
@@ -1314,8 +1773,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                 <Sparkles className="h-4 w-4 text-indigo-300" />
               )}
               {loading
-                ? 'Przygotowuję odpowiedź na podstawie Bazy Wiedzy i sieci...'
-                : 'Generuj odpowiedź dla klienta'}
+                ? 'Przygotowuję odpowiedź na podstawie Bazy Wiedzy i historii czatu...'
+                : !clientMessage.trim() && lastChatClientMsg
+                  ? 'Przelicz ponownie na bazie tego czatu'
+                  : 'Generuj odpowiedź dla klienta'}
             </button>
 
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/50 px-3 py-2">
@@ -1328,10 +1789,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                   <button
                     key={days}
                     type="button"
-                    disabled={loading || !clientMessage.trim()}
+                    disabled={loading || (!clientMessage.trim() && !lastChatClientMsg)}
                     onClick={() =>
                       void handleGenerate(
-                        clientMessage,
+                        clientMessage.trim() ? clientMessage : undefined,
                         advisorNotes,
                         replyLanguage,
                         'concise',
@@ -1351,7 +1812,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       </div>
 
       {/* RIGHT COLUMN: Proponowana odpowiedź dla klienta */}
-      <div className="lg:col-span-7">
+      <div className={showChatsSidebar ? 'lg:col-span-5' : 'lg:col-span-7'}>
         {loading ? (
           <div className="soft-card animate-enter flex h-full min-h-[480px] flex-col justify-between rounded-3xl border border-indigo-200/70 bg-white/90 p-7">
             <div className="space-y-4">
@@ -1998,6 +2459,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
           void refreshCloudInbox();
         }}
       />
+      </div>
     </div>
   );
 };

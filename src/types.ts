@@ -321,6 +321,27 @@ export interface ReplyHistoryItem {
   reply: SalesReplyResult;
 }
 
+export interface ClientChatMessage {
+  id: string;
+  role: 'client' | 'advisor';
+  text: string;
+  subject?: string;
+  createdAt: string;
+  reply?: SalesReplyResult;
+}
+
+export interface ClientChatThread {
+  id: string;
+  clientName: string;
+  clientContact?: string;
+  channel?: 'email' | 'sms' | 'whatsapp' | 'tally';
+  starred: boolean;
+  temperature?: 'HOT' | 'WARM' | 'COLD';
+  createdAt: string;
+  updatedAt: string;
+  messages: ClientChatMessage[];
+}
+
 export interface InboxFeedItem {
   id: string;
   source: 'gmail' | 'whatsapp' | 'meta' | 'tally' | 'webhook';
@@ -333,4 +354,4 @@ export interface InboxFeedItem {
   handledBy?: string;
 }
 
-export type WorkspaceDataKey = 'deals' | 'quick_links' | 'objections' | 'reply_history';
+export type WorkspaceDataKey = 'deals' | 'quick_links' | 'objections' | 'reply_history' | 'chat_threads';

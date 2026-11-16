@@ -106,8 +106,8 @@ export default async function handler(
       const dataKey = String(body.dataKey || '').trim();
       const authorName = String(body.authorName || 'Zespół');
 
-      if (!dataKey || !['deals', 'quick_links', 'objections', 'reply_history'].includes(dataKey)) {
-        sendJson(res, 400, { error: 'Nieprawidłowy dataKey workspace (wymagane: deals | quick_links | objections | reply_history).' });
+      if (!dataKey || !['deals', 'quick_links', 'objections', 'reply_history', 'chat_threads'].includes(dataKey)) {
+        sendJson(res, 400, { error: 'Nieprawidłowy dataKey workspace (wymagane: deals | quick_links | objections | reply_history | chat_threads).' });
         return;
       }
 
