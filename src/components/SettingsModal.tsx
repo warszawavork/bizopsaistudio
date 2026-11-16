@@ -590,52 +590,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
                 <div className="rounded-xl border border-indigo-100 bg-white p-3 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-indigo-900 font-mono">gemini-3.8-flash</span>
-                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">Domyślny</span>
+                    <span className="font-bold text-indigo-900 font-mono">gemini-3-flash-preview / 3.8</span>
+                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">Główne AI</span>
                   </div>
                   <p className="text-[11px] text-slate-600">
-                    Główny model BizOps AI Studio: generowanie odpowiedzi handlowych, audyt dokumentów, kompresja i ekstrakcja wiedzy.
+                    Główne modele BizOps AI Studio do odpowiedzi sprzedażowych, analizy załączników i ekstrakcji wiedzy.
                   </p>
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-800 font-mono">gemini-3.7-flash</span>
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">Fallback #1</span>
+                    <span className="font-bold text-slate-800 font-mono">gemini-3.5 / 3.7-flash</span>
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">Fallback #1–#2</span>
                   </div>
                   <p className="text-[11px] text-slate-600">
-                    Automatyczny rezerwowy model o wysokiej przepustowości w przypadku obciążenia lub chwilowych limitów kolejki.
+                    Rezerwowe silniki o wysokiej przepustowości przejmujące ruch przy skokach obciążenia (429/503).
                   </p>
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-800 font-mono">gemini-3.5-flash</span>
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">Fallback #2</span>
+                    <span className="font-bold text-slate-800 font-mono">gemini-3.1 / 3.5-flash-lite</span>
+                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">Szybki Fallback</span>
                   </div>
                   <p className="text-[11px] text-slate-600">
-                    Szybki silnik analizy struktury, syntezy długich tekstów i weryfikacji spójności bazy wiedzy.
+                    Lekkie i ultra-stabilne modele (~1.3 s) z pełnym wsparciem PDF/Vision oraz JSON Schema.
                   </p>
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-800 font-mono">gemini-3.5-flash-lite</span>
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">Fallback #3</span>
+                    <span className="font-bold text-slate-800 font-mono">gemini-flash-lite-latest</span>
+                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">Ostatnia Linia</span>
                   </div>
                   <p className="text-[11px] text-slate-600">
-                    Ultra-lekki silnik awaryjny o zerowym opóźnieniu gwarantujący 100% ciągłości działania aplikacji biznesowej.
+                    Awaryjny silnik (&lt;1 s) gwarantujący ciągłość pracy przy szczytowym obciążeniu Google AI.
                   </p>
                 </div>
               </div>
 
               <div className="rounded-xl bg-slate-900 text-slate-200 p-3 text-[11px] space-y-1 font-mono">
                 <div className="flex items-center justify-between text-cyan-300 font-bold">
-                  <span>ŁAŃCUCH NIEZAWODNOŚCI (FALLBACK CHAIN):</span>
-                  <span>Auto-Switch 200 ms</span>
+                  <span>CIRCUIT BREAKER + 7-MODEL FALLBACK:</span>
+                  <span>Auto-Cooldown 90 s</span>
                 </div>
                 <p className="text-slate-400 font-sans">
-                  Jeśli Google AI zgłosi limit, przeciążenie lub błąd modelu, serwer w ciągu 200 milisekund automatycznie przełącza się na kolejnego bota z łańcucha, nie przerywając pracy handlowca.
+                  Gdy dowolny model zgłosi przeciążenie (503 High Demand / 429) lub przekroczy czas odpowiedzi, wyłącznik automatycznie odstawia go na 90 s, przełącza na zdrowy model i ponawia próbę z backoffem (w tym w LangGraph i dużych PDF-ach).
                 </p>
               </div>
             </div>

@@ -33,10 +33,21 @@ interface ContextStatsResult {
 const GEMINI_MODEL = 'gemini-3.8-flash';
 const MODEL_FALLBACK_CHAIN = [
   'gemini-3.8-flash',
-  'gemini-3.7-flash',
+  'gemini-3-flash-preview',
   'gemini-3.5-flash',
+  'gemini-3.7-flash',
   'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
 ];
+const FAST_HEALTHY_MODELS = [
+  'gemini-3-flash-preview',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
+];
+const MODEL_COOLDOWN_MS = 90_000;
+const modelCooldownUntil = new Map<string, number>();
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 const SEMANTIC_CLUSTERS: string[][] = [
@@ -301,7 +312,76 @@ function parseGeminiJson<T>(text: string): T {
     .replace(/^```\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
-  return JSON.parse(cleaned) as T;
+
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    // Wyciągnij główny obiekt/tablicę JSON, jeśli model dodał komentarz przed lub po JSON
+    const firstObj = cleaned.indexOf('{');
+    const lastObj = cleaned.lastIndexOf('}');
+    if (firstObj !== -1 && lastObj > firstObj) {
+      return JSON.parse(cleaned.slice(firstObj, lastObj + 1)) as T;
+    }
+    const firstArr = cleaned.indexOf('[');
+    const lastArr = cleaned.lastIndexOf(']');
+    if (firstArr !== -1 && lastArr > firstArr) {
+      return JSON.parse(cleaned.slice(firstArr, lastArr + 1)) as T;
+    }
+    throw new Error('Model AI zwrócił niekompletną odpowiedź JSON. Spróbuj ponownie lub zmniejsz rozmiar fragmentu.');
+  }
+}
+
+function isTransientErrorText(status: number, msg: string): boolean {
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    /high demand|overloaded|unavailable|no longer available|resource_exhausted|quota|try again|timeout|abort/i.test(msg)
+  );
+}
+
+function toFriendlyGeminiError(rawMsg: string): string {
+  if (/high demand|overloaded|unavailable|resource_exhausted|429|503/i.test(rawMsg)) {
+    return 'Wszystkie modele Google Gemini są chwilowo mocno obciążone (429/503 High Demand). System automatycznie wypróbował 7 modeli rezerwowych — odczekaj 10–20 sekund i kliknij ponownie.';
+  }
+  if (/413|payload|too large|request entity/i.test(rawMsg)) {
+    return 'Załącznik jest zbyt duży dla pojedynczego zapytania. Wgraj mniejszy plik lub podziel dokument na części.';
+  }
+  if (/abort|timeout|limit czasu/i.test(rawMsg)) {
+    return 'Przekroczono czas oczekiwania na odpowiedź Gemini AI przy analizie dużego załącznika. Spróbuj ponownie lub wyślij mniejszy fragment.';
+  }
+  return rawMsg;
+}
+
+function getOrderedModelsForCall(hasMedia: boolean): string[] {
+  const now = Date.now();
+  const baseOrder = hasMedia
+    ? [
+        'gemini-3-flash-preview',
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-flash-lite-latest',
+        'gemini-3.8-flash',
+        'gemini-3.5-flash',
+        'gemini-3.7-flash',
+      ]
+    : [...MODEL_FALLBACK_CHAIN];
+
+  const healthy: string[] = [];
+  const cooling: string[] = [];
+  for (const m of baseOrder) {
+    const until = modelCooldownUntil.get(m) ?? 0;
+    if (until > now) {
+      cooling.push(m);
+    } else {
+      healthy.push(m);
+    }
+  }
+  // Najpierw zdrowe modele, na końcu najdawniej schłodzone jako ostatnia deska ratunku
+  cooling.sort((a, b) => (modelCooldownUntil.get(a) ?? 0) - (modelCooldownUntil.get(b) ?? 0));
+  return [...healthy, ...cooling];
 }
 
 async function callGemini(
@@ -312,24 +392,30 @@ async function callGemini(
   model: string;
   usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
 }> {
+  const startedCallAt = Date.now();
+  const maxTotalBudgetMs = 46_000;
+  const serialized = JSON.stringify(payload);
+  const hasMedia = serialized.includes('inlineData');
+  const candidateModels = getOrderedModelsForCall(hasMedia);
+
   let lastError: Error = new Error('Nie udało się połączyć z modelem Gemini.');
 
-  for (let i = 0; i < MODEL_FALLBACK_CHAIN.length; i++) {
-    const model = MODEL_FALLBACK_CHAIN[i];
+  const tryModelOnce = async (model: string, timeoutMs: number) => {
     const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 16000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: serialized,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
 
-      const data = (await response.json()) as {
+      const rawBody = await response.text();
+      let data: {
         error?: { message?: string; code?: number };
         candidates?: Array<{
           content?: { parts?: Array<{ text?: string }> };
@@ -339,30 +425,27 @@ async function callGemini(
           candidatesTokenCount?: number;
           totalTokenCount?: number;
         };
-      };
+      } = {};
+      try {
+        data = rawBody ? (JSON.parse(rawBody) as typeof data) : {};
+      } catch {
+        data = { error: { message: `HTTP ${response.status}: ${rawBody.slice(0, 140)}` } };
+      }
 
       if (!response.ok) {
         const msg = data.error?.message || `Błąd Gemini API (HTTP ${response.status})`;
-        const isTransientOrDeprecated =
-          response.status === 429 ||
-          response.status === 500 ||
-          response.status === 503 ||
-          response.status === 404 ||
-          /high demand|overloaded|unavailable|no longer available/i.test(msg);
-
-        lastError = new Error(msg);
-        if (isTransientOrDeprecated && i < MODEL_FALLBACK_CHAIN.length - 1) {
-          await new Promise((r) => setTimeout(r, 200));
-          continue;
+        if (isTransientErrorText(response.status, msg)) {
+          modelCooldownUntil.set(model, Date.now() + MODEL_COOLDOWN_MS);
         }
-        throw lastError;
+        throw Object.assign(new Error(msg), { transient: isTransientErrorText(response.status, msg) || response.status === 404 });
       }
 
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       if (!text) {
-        throw new Error('Model Gemini zwrócił pustą odpowiedź.');
+        throw Object.assign(new Error('Model Gemini zwrócił pustą odpowiedź.'), { transient: true });
       }
 
+      modelCooldownUntil.delete(model);
       return {
         text,
         model,
@@ -374,15 +457,56 @@ async function callGemini(
       };
     } catch (err) {
       clearTimeout(timeoutId);
+      const msg = err instanceof Error ? err.message : String(err);
+      const transient =
+        (err as { transient?: boolean })?.transient === true ||
+        isTransientErrorText(0, msg);
+      if (transient) {
+        modelCooldownUntil.set(model, Date.now() + MODEL_COOLDOWN_MS);
+      }
+      throw Object.assign(err instanceof Error ? err : new Error(msg), { transient });
+    }
+  };
+
+  // Przebieg 1: wszystkie dostępne modele (z szybkim timeoutem, by nie zawisnąć na przeciążonym)
+  for (let i = 0; i < candidateModels.length; i++) {
+    const elapsed = Date.now() - startedCallAt;
+    if (elapsed > maxTotalBudgetMs) break;
+
+    const model = candidateModels[i];
+    const isLite = model.includes('lite');
+    const timeoutMs = hasMedia ? (isLite ? 22_000 : 14_000) : (isLite ? 13_000 : 9_500);
+
+    try {
+      return await tryModelOnce(model, Math.min(timeoutMs, maxTotalBudgetMs - elapsed));
+    } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      if (i < MODEL_FALLBACK_CHAIN.length - 1) {
-        await new Promise((r) => setTimeout(r, 200));
-        continue;
+      const isTransient = (err as { transient?: boolean })?.transient !== false;
+      if (!isTransient) {
+        throw new Error(toFriendlyGeminiError(lastError.message));
+      }
+      if (i < candidateModels.length - 1) {
+        await new Promise((r) => setTimeout(r, 250));
       }
     }
   }
 
-  throw lastError;
+  // Przebieg 2 (Backoff retry): odczekaj ~1.4s po chwilowym skoku 429/503 i ponów na najszybszych modelach
+  const remainingBudget = maxTotalBudgetMs - (Date.now() - startedCallAt);
+  if (remainingBudget > 8_000) {
+    await new Promise((r) => setTimeout(r, 1_400));
+    for (const model of FAST_HEALTHY_MODELS) {
+      const elapsed = Date.now() - startedCallAt;
+      if (elapsed > maxTotalBudgetMs - 2_000) break;
+      try {
+        return await tryModelOnce(model, Math.min(18_000, maxTotalBudgetMs - elapsed));
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+  }
+
+  throw new Error(toFriendlyGeminiError(lastError.message));
 }
 
 async function fetchLiveWebContext(
@@ -390,12 +514,18 @@ async function fetchLiveWebContext(
   companyIndustry: string,
   clientMessage: string
 ): Promise<{ summary: string; sources: LiveWebSource[]; searchQueries: string[] }> {
-  const webModels = MODEL_FALLBACK_CHAIN.slice(0, 3);
+  const now = Date.now();
+  const webModels = [
+    'gemini-3-flash-preview',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash',
+    'gemini-flash-lite-latest',
+  ].sort((a, b) => ((modelCooldownUntil.get(a) ?? 0) > now ? 1 : 0) - ((modelCooldownUntil.get(b) ?? 0) > now ? 1 : 0));
 
   for (let i = 0; i < webModels.length; i++) {
     const model = webModels[i];
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9500);
+    const timeoutId = setTimeout(() => controller.abort(), 6500);
 
     try {
       const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -421,6 +551,9 @@ async function fetchLiveWebContext(
       clearTimeout(timeoutId);
 
       if (!response.ok) {
+        if (response.status === 429 || response.status === 503) {
+          modelCooldownUntil.set(model, Date.now() + MODEL_COOLDOWN_MS);
+        }
         if ((response.status === 429 || response.status === 503 || response.status === 404) && i < webModels.length - 1) {
           continue;
         }
@@ -700,6 +833,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         contents: [{ role: 'user', parts }],
         generationConfig: {
           temperature: 0.2,
+          maxOutputTokens: 4096,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'OBJECT',
@@ -1240,9 +1374,11 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const pageImages = Array.isArray(body.pageImages)
         ? (body.pageImages as Array<{
             pageNum?: number;
+            pageNumber?: number;
             base64?: string;
             mimeType?: string;
             dimensionsLabel?: string;
+            label?: string;
           }>).filter((p) => p && typeof p.base64 === 'string' && p.base64.length > 0)
         : [];
 
@@ -1331,8 +1467,10 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       }
       if (pageImages.length > 0) {
         for (const img of pageImages) {
+          const pNum = img.pageNum ?? img.pageNumber ?? '?';
+          const pDims = img.dimensionsLabel ?? img.label ?? 'niestandardowy wymiar';
           parts.push({
-            text: `Strona PDF #${img.pageNum ?? '?'} (${img.dimensionsLabel || 'niestandardowy wymiar'}):`,
+            text: `Strona PDF #${pNum} (${pDims}):`,
           });
           parts.push({
             inlineData: { mimeType: img.mimeType || 'image/jpeg', data: img.base64 },
@@ -1350,6 +1488,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         contents: [{ role: 'user', parts }],
         generationConfig: {
           temperature: 0.2,
+          maxOutputTokens: isDeepBookMode ? 8192 : 4096,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'OBJECT',

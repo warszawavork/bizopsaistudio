@@ -323,3 +323,75 @@ export function chunkBookOrLargeText(rawText: string, maxChunkChars = 16000): Te
     charCount: c.text.length,
   }));
 }
+
+/**
+ * Automatycznie zmniejsza i kompresuje zbyt duże zdjęcia przed wysłaniem do API,
+ * aby zapobiec błędom przekroczenia rozmiaru (413) i timeoutom Gemini Vision.
+ */
+export async function compressImageForUpload(
+  file: File,
+  maxDimension = 1600,
+  quality = 0.85,
+): Promise<{ base64: string; mimeType: string; sizeKb: number }> {
+  const rawBufferPromise = () =>
+    new Promise<{ base64: string; mimeType: string; sizeKb: number }>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || '');
+        const b64 = res.includes(',') ? res.split(',')[1] : res;
+        resolve({
+          base64: b64,
+          mimeType: file.type || 'image/jpeg',
+          sizeKb: Math.max(1, Math.round(file.size / 1024)),
+        });
+      };
+      reader.onerror = () => reject(reader.error || new Error('Nie udało się odczytać obrazu.'));
+      reader.readAsDataURL(file);
+    });
+
+  // Małe pliki (< 1.5 MB) przechodzą bez ponownej kompresji
+  if (file.size <= 1.5 * 1024 * 1024 || typeof window === 'undefined') {
+    return rawBufferPromise();
+  }
+
+  return new Promise((resolve) => {
+    const imgUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const longest = Math.max(img.width, img.height);
+        const scale = longest > maxDimension ? maxDimension / longest : 1;
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          URL.revokeObjectURL(imgUrl);
+          void rawBufferPromise().then(resolve);
+          return;
+        }
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        const base64 = dataUrl.split(',')[1] || '';
+        URL.revokeObjectURL(imgUrl);
+        resolve({
+          base64,
+          mimeType: 'image/jpeg',
+          sizeKb: Math.max(1, Math.round((base64.length * 0.75) / 1024)),
+        });
+      } catch {
+        URL.revokeObjectURL(imgUrl);
+        void rawBufferPromise().then(resolve);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(imgUrl);
+      void rawBufferPromise().then(resolve);
+    };
+    img.src = imgUrl;
+  });
+}

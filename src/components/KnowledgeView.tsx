@@ -37,13 +37,13 @@ import type {
 } from '../types';
 import {
   estimateTokens,
-  fileToBase64,
   runAutoDistillKnowledge,
   runKnowledgeConsistencyCheck,
   runSmartIngest,
 } from '../utils/apiClient';
 import {
   chunkBookOrLargeText,
+  compressImageForUpload,
   readDocumentForStudio,
   type ScannedPdfPageImage,
 } from '../utils/documentReader';
@@ -252,12 +252,12 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
     e.target.value = '';
 
     if (file.type.startsWith('image/')) {
-      const base64 = await fileToBase64(file);
+      const compressed = await compressImageForUpload(file);
       setBookMeta(null);
       setIngestFile({
         name: file.name,
-        mimeType: file.type || 'image/jpeg',
-        base64,
+        mimeType: compressed.mimeType,
+        base64: compressed.base64,
       });
       return;
     }
@@ -370,13 +370,32 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
     try {
       const effectiveName = bookMeta?.fileName || ingestFile?.name || ingestUrl.trim() || 'Notatki / Książka';
 
+      const paceDelay = async (ms: number) => {
+        await new Promise<void>((resolve, reject) => {
+          if (controller.signal.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'));
+            return;
+          }
+          const t = window.setTimeout(resolve, ms);
+          controller.signal.addEventListener(
+            'abort',
+            () => {
+              window.clearTimeout(t);
+              reject(new DOMException('Aborted', 'AbortError'));
+            },
+            { once: true },
+          );
+        });
+      };
+
       if (hasScanPages && bookMeta?.scannedPages?.length) {
         const pages = bookMeta.scannedPages;
-        const batchSize = 4;
+        const batchSize = 2;
         const totalBatches = Math.ceil(pages.length / batchSize);
 
         for (let b = 0; b < totalBatches; b++) {
           if (controller.signal.aborted) break;
+          if (b > 0) await paceDelay(900);
           const slice = pages.slice(b * batchSize, (b + 1) * batchSize);
           const rangeLabel = `Strony ${slice[0].pageNum}–${slice[slice.length - 1].pageNum} (${slice[0].dimensionsLabel})`;
           setIngestProgress({
@@ -421,6 +440,7 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
           const chunks = chunkBookOrLargeText(trimmedText, 16000);
           for (const ch of chunks) {
             if (controller.signal.aborted) break;
+            if (ch.index > 0) await paceDelay(800);
             setIngestProgress({
               current: ch.index + 1,
               total: ch.total,
@@ -498,8 +518,17 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
         onMascotUpdate('happy', `Zatrzymano przetwarzanie — zachowałem ${accumulated.length} dotychczasowych kafelków!`);
       } else {
         const msg = err instanceof Error ? err.message : 'Błąd przetwarzania wiedzy';
-        setIngestError(msg);
-        onMascotUpdate('alert', 'Nie udało się przetworzyć materiału.');
+        setIngestError(
+          accumulated.length > 0
+            ? `${msg} (Zachowano ${accumulated.length} wyodrębnionych kafelków z poprzednich fragmentów — możesz je zapisać poniżej.)`
+            : msg
+        );
+        onMascotUpdate(
+          accumulated.length > 0 ? 'curious' : 'alert',
+          accumulated.length > 0
+            ? `Częściowy sukces — zachowałem ${accumulated.length} kafelków przed przerwaniem!`
+            : 'Nie udało się przetworzyć materiału.'
+        );
       }
     } finally {
       setIngesting(false);

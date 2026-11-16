@@ -1,7 +1,17 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { StateGraph, END, START, Annotation } from '@langchain/langgraph';
 
-const GEMINI_MODEL = 'gemini-3.8-flash';
+const GEMINI_FALLBACK_CHAIN = [
+  'gemini-3-flash-preview',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash',
+  'gemini-3.7-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
+];
+const MODEL_COOLDOWN_MS = 90_000;
+const modelCooldownUntil = new Map<string, number>();
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 function getApiKey(customKey?: string): { key: string; source: 'custom_key' | 'env_key' } {
@@ -19,7 +29,12 @@ function getApiKey(customKey?: string): { key: string; source: 'custom_key' | 'e
 }
 
 async function callGeminiRaw(apiKey: string, prompt: string, systemInstruction?: string): Promise<string> {
-  const url = `${GEMINI_BASE_URL}/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const now = Date.now();
+  const ordered = [
+    ...GEMINI_FALLBACK_CHAIN.filter((m) => (modelCooldownUntil.get(m) ?? 0) <= now),
+    ...GEMINI_FALLBACK_CHAIN.filter((m) => (modelCooldownUntil.get(m) ?? 0) > now),
+  ];
+
   const body: Record<string, unknown> = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.2, maxOutputTokens: 2048 },
@@ -27,21 +42,65 @@ async function callGeminiRaw(apiKey: string, prompt: string, systemInstruction?:
   if (systemInstruction) {
     body.systemInstruction = { parts: [{ text: systemInstruction }] };
   }
+  const serialized = JSON.stringify(body);
+  let lastMsg = 'Nie udało się połączyć z modelami Gemini w potoku LangGraph.';
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  for (let i = 0; i < ordered.length; i++) {
+    const model = ordered[i];
+    const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), model.includes('lite') ? 14_000 : 10_000);
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini API Error: HTTP ${res.status} - ${errText}`);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: serialized,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      const rawText = await res.text();
+      let data: { error?: { message?: string }; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } = {};
+      try {
+        data = rawText ? (JSON.parse(rawText) as typeof data) : {};
+      } catch {
+        data = { error: { message: `HTTP ${res.status}` } };
+      }
+
+      if (!res.ok) {
+        const msg = data.error?.message || `HTTP ${res.status}`;
+        lastMsg = msg;
+        if (res.status === 429 || res.status === 503 || res.status === 500 || /high demand|overloaded|unavailable/i.test(msg)) {
+          modelCooldownUntil.set(model, Date.now() + MODEL_COOLDOWN_MS);
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        if (res.status === 404) continue;
+        throw new Error(msg);
+      }
+
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (!text) {
+        lastMsg = 'Model zwrócił pustą odpowiedź.';
+        continue;
+      }
+      modelCooldownUntil.delete(model);
+      return text.trim();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastMsg = err instanceof Error ? err.message : String(err);
+      modelCooldownUntil.set(model, Date.now() + MODEL_COOLDOWN_MS);
+      if (i < ordered.length - 1) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
   }
 
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return text.trim();
+  if (/high demand|overloaded|429|503/i.test(lastMsg)) {
+    throw new Error('Modele Google Gemini są chwilowo przeciążone (429/503). Odczekaj 10–15 sekund i uruchom LangGraph ponownie.');
+  }
+  throw new Error(lastMsg);
 }
 
 // 1. Definicja Stanu LangGraph (State Annotation)

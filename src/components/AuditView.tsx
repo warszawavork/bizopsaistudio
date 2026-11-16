@@ -34,7 +34,7 @@ import type {
   MascotMood,
 } from '../types';
 import { fileToBase64, runDocumentAudit, runDocumentComparison } from '../utils/apiClient';
-import { readDocumentForStudio } from '../utils/documentReader';
+import { compressImageForUpload, readDocumentForStudio } from '../utils/documentReader';
 import { escapeHtml } from '../utils/emailExport';
 import { exportAuditToPdf, exportComparisonToPdf, printCleanReportHtml } from '../utils/pdfExport';
 
@@ -178,16 +178,16 @@ export const AuditView: React.FC<AuditViewProps> = ({
     setReadingDocInfo(null);
 
     if (file.type.startsWith('image/')) {
-      if (file.size > 4 * 1024 * 1024) {
-        setError('Maksymalny rozmiar pojedynczego zdjęcia to 4 MB.');
+      if (file.size > 15 * 1024 * 1024) {
+        setError('Maksymalny rozmiar pojedynczego zdjęcia to 15 MB.');
         return;
       }
-      const base64 = await fileToBase64(file);
+      const compressed = await compressImageForUpload(file);
       setUploadedFile({
         name: file.name,
-        mimeType: file.type || 'image/jpeg',
-        base64,
-        sizeKb: Math.max(1, Math.round(file.size / 1024)),
+        mimeType: compressed.mimeType,
+        base64: compressed.base64,
+        sizeKb: compressed.sizeKb,
       });
       return;
     }
@@ -197,7 +197,7 @@ export const AuditView: React.FC<AuditViewProps> = ({
       const parsed = await readDocumentForStudio(file, (label) => setReadingDocInfo(label));
 
       if (parsed.kind === 'pdf_scan' && parsed.scannedPages?.length) {
-        const useRawPdf = file.size <= 3.6 * 1024 * 1024;
+        const useRawPdf = file.size <= 2.4 * 1024 * 1024;
         const base64 = useRawPdf ? await fileToBase64(file) : parsed.scannedPages[0].base64;
         const mimeType = useRawPdf ? 'application/pdf' : parsed.scannedPages[0].mimeType;
         if (parsed.text.trim()) {

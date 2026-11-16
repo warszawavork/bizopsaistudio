@@ -126,30 +126,97 @@ function buildHeaders(): HeadersInit {
   return headers;
 }
 
+function waitAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function isRetryableClientError(status: number, msg: string): boolean {
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    /high demand|overloaded|unavailable|przeciąż|429|503|failed to fetch|networkerror|load failed|timeout/i.test(msg)
+  );
+}
+
 async function postJson<T>(
   url: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: buildHeaders(),
-    body: JSON.stringify(body),
-    signal,
-  });
-  let data: (T & { error?: string }) | null = null;
-  try {
-    data = (await response.json()) as T & { error?: string };
-  } catch {
-    data = null;
+  const serialized = JSON.stringify(body);
+  if (serialized.length > 4_300_000) {
+    throw new Error(
+      'Załącznik jest zbyt duży (przekracza limit 4.3 MB pojedynczego żądania). Zmniejsz plik lub wgraj go w mniejszych częściach.',
+    );
   }
-  if (!response.ok) {
-    throw new Error(data?.error || `Błąd serwera HTTP ${response.status}`);
+
+  const isAiEndpoint = url.startsWith('/api/ai') || url.startsWith('/api/langgraph');
+  const maxRetries = isAiEndpoint ? 2 : 0;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: serialized,
+        signal,
+      });
+
+      const rawText = await response.text();
+      let data: (T & { error?: string }) | null = null;
+      try {
+        data = rawText ? (JSON.parse(rawText) as T & { error?: string }) : null;
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        if (response.status === 413) {
+          throw new Error('Załącznik przekroczył limit rozmiaru serwera (HTTP 413). Wybierz mniejszy plik.');
+        }
+        const errMsg = data?.error || `Błąd serwera HTTP ${response.status}`;
+        if (attempt < maxRetries && isRetryableClientError(response.status, errMsg)) {
+          await waitAbortable(attempt === 0 ? 1800 : 3800, signal);
+          continue;
+        }
+        throw new Error(errMsg);
+      }
+
+      if (!data) {
+        throw new Error('Serwer zwrócił niepoprawną odpowiedź JSON.');
+      }
+      return data;
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw err;
+      }
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (attempt < maxRetries && isRetryableClientError(0, errMsg)) {
+        await waitAbortable(attempt === 0 ? 1800 : 3800, signal);
+        continue;
+      }
+      throw err instanceof Error ? err : new Error(errMsg);
+    }
   }
-  if (!data) {
-    throw new Error('Serwer zwrócił niepoprawną odpowiedź JSON.');
-  }
-  return data;
+
+  throw new Error('Nie udało się uzyskać odpowiedzi z serwera AI.');
 }
 
 export async function testAiConnection(): Promise<{
