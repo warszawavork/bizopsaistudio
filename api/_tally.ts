@@ -481,8 +481,17 @@ export function evaluateTallyQuoteFromLiveData(
     );
   }
 
-  // Architekt
-  const arch = rawInput.architectPkg ?? null;
+  // Architekt (automatyczne dopasowanie progu metrażowego przy zmianie metrażu/przeznaczenia)
+  const rawArch = rawInput.architectPkg ?? null;
+  const totalGrossFloorM2 = Math.round(footprintM2 * floorMult);
+  const arch =
+    rawArch === 'letniskowy' || rawArch === 'mieszkalny_70' || rawArch === 'mieszkalny_120'
+      ? effectiveIns === 'letniskowy'
+        ? 'letniskowy'
+        : totalGrossFloorM2 > 70
+          ? 'mieszkalny_120'
+          : 'mieszkalny_70'
+      : rawArch;
   if (arch && arch !== 'none') {
     const archPrice =
       arch === 'letniskowy'

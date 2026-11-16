@@ -306,6 +306,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [recalculatingTally, setRecalculatingTally] = useState<boolean>(false);
   const [manualAreaInput, setManualAreaInput] = useState<string>('50');
   const deletedChatIdsRef = useRef<Set<string>>(new Set());
+  const recalcSeqRef = useRef<number>(0);
 
   const activeChat = chatThreads.find((c) => c.id === activeChatId) ?? null;
 
@@ -1139,7 +1140,27 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const handleRemoveIntegratedItem = (key: string) => {
     if (!integratedTallyQuote) return;
     const filtered = integratedTallyQuote.breakdown.filter((b) => b.key !== key);
-    const updated = rebuildFormattedBlock(integratedTallyQuote, filtered);
+    const inputPatch: Partial<TallyQuoteInput> = {};
+    if (key === 'foundation') inputPatch.foundation = 'brak';
+    if (key === 'architect') inputPatch.architectPkg = 'none';
+    if (key === 'underfloor') inputPatch.underfloorHeating = false;
+    if (key === 'heaters') inputPatch.heatersCount = 0;
+    if (key === 'ac') inputPatch.acCount = 0;
+    if (key === 'bathroom') inputPatch.bathroom = 'none';
+    if (key === 'kitchen') inputPatch.kitchenPkg = 'none';
+    if (key === 'fireplace') inputPatch.fireplace = 'none';
+    if (key === 'terrace_covered') inputPatch.coveredTerraceM2 = 0;
+    if (key === 'terrace_open') inputPatch.openTerraceM2 = 0;
+    if (key === 'roof_mpzp') inputPatch.roofAngleMpzp = false;
+    if (key === 'delivery') {
+      inputPatch.deliveryKm = 0;
+      inputPatch.deliveryModules = 0;
+    }
+    const baseUpdated = rebuildFormattedBlock(integratedTallyQuote, filtered);
+    const updated: TallyQuoteEvaluation = {
+      ...baseUpdated,
+      input: { ...baseUpdated.input, ...inputPatch },
+    };
     setIntegratedTallyQuote(updated);
     if (replyOutputMode !== 'reply_only') {
       applyReplyOutputMode(replyOutputMode, updated);
@@ -1194,17 +1215,18 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   };
 
   const handleAdjustIntegratedQuoteParams = async (patch: Partial<TallyQuoteInput>) => {
-    if (!integratedTallyQuote || recalculatingTally) return;
+    if (!integratedTallyQuote) return;
     const baseInput = integratedTallyQuote.input;
     const nextInput: TallyQuoteInput = {
       ...baseInput,
       ...patch,
-      ...(patch.areaM2 !== undefined ? { deliveryModules: 0 } : {}),
+      ...(patch.areaM2 !== undefined || patch.floorType !== undefined ? { deliveryModules: 0 } : {}),
     };
     if (patch.areaM2 !== undefined) {
       setManualAreaInput(String(patch.areaM2));
     }
 
+    const seqId = ++recalcSeqRef.current;
     setRecalculatingTally(true);
     setError(null);
     try {
@@ -1212,6 +1234,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         input: nextInput,
         tallyFormId: integratedTallyQuote.formId || 'dWO4Oq',
       });
+      if (seqId !== recalcSeqRef.current) return;
       setIntegratedTallyQuote(res.quote);
       if (res.quote.input.areaM2) {
         setManualAreaInput(String(res.quote.input.areaM2));
@@ -1222,11 +1245,30 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         includeWarsawRef,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Nie udało się przeliczyć zmienionych parametrów.');
+      if (seqId === recalcSeqRef.current) {
+        setError(err instanceof Error ? err.message : 'Nie udało się przeliczyć zmienionych parametrów.');
+      }
     } finally {
-      setRecalculatingTally(false);
+      if (seqId === recalcSeqRef.current) {
+        setRecalculatingTally(false);
+      }
     }
   };
+
+  useEffect(() => {
+    if (!integratedTallyQuote) return;
+    const parsed = Math.round(Number(manualAreaInput));
+    const currentArea = Math.round(integratedTallyQuote.input.areaM2 || 0);
+    if (!Number.isFinite(parsed) || parsed < 15 || parsed > 300 || parsed === currentArea) return;
+    const timer = window.setTimeout(() => {
+      void handleAdjustIntegratedQuoteParams({
+        areaM2: parsed,
+        areaEstimatedByBot: false,
+        areaIsTotalUsable: false,
+      });
+    }, 380);
+    return () => window.clearTimeout(timer);
+  }, [manualAreaInput]);
 
   const handleCreateDealFromIntegratedQuote = () => {
     if (!integratedTallyQuote || !onCreateCrmDeal) return;
@@ -2672,158 +2714,218 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Ręczna korekta zaproponowanego domku: Metraż / Kondygnacja / Ilość */}
-                  <div className="rounded-xl border border-emerald-200/80 bg-white/90 px-3 py-2 flex flex-wrap items-center justify-between gap-2.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
-                        Dostosuj domek:
-                      </span>
+                  {/* Ręczna korekta kryteriów z automatycznym przeliczeniem cennika */}
+                  <div className="rounded-xl border border-emerald-200/80 bg-white/95 px-3 py-2 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                          Parametry domku:
+                        </span>
 
-                      {/* Metraż podstawy (m²) */}
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Metraż:</span>
-                        {[35, 50, 70, 100].map((m2) => {
-                          const isCurrent = Math.round(integratedTallyQuote.input.areaM2 || 0) === m2;
-                          return (
+                        {/* Metraż podstawy (m²) */}
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Metraż:</span>
+                          {[35, 50, 70, 100].map((m2) => {
+                            const isCurrent = Math.round(integratedTallyQuote.input.areaM2 || 0) === m2;
+                            return (
+                              <button
+                                key={m2}
+                                type="button"
+                                onClick={() =>
+                                  void handleAdjustIntegratedQuoteParams({
+                                    areaM2: m2,
+                                    areaEstimatedByBot: false,
+                                    areaIsTotalUsable: false,
+                                  })
+                                }
+                                className={`rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
+                                  isCurrent
+                                    ? 'bg-emerald-600 text-white shadow-2xs'
+                                    : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-emerald-300'
+                                }`}
+                              >
+                                {m2}
+                              </button>
+                            );
+                          })}
+                          <div className="flex items-center rounded-lg border border-slate-200 bg-slate-50 px-1.5 py-0.5">
+                            <input
+                              type="number"
+                              min={15}
+                              max={300}
+                              value={manualAreaInput}
+                              onChange={(e) => setManualAreaInput(e.target.value)}
+                              className="w-10 bg-transparent text-center text-[10px] font-bold text-slate-900 outline-none"
+                              title="Wpisz własny metraż podstawy w m² — przeliczy się automatycznie"
+                            />
+                            <span className="text-[10px] font-semibold text-slate-400">m²</span>
+                          </div>
+                        </div>
+
+                        {/* Kondygnacja */}
+                        <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                          <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Bryła:</span>
+                          {(
+                            [
+                              { id: 'parter', label: 'Parter (×1)' },
+                              { id: 'poddasze', label: 'Poddasze (×1.5)' },
+                              { id: 'pietro', label: 'Piętro (×2)' },
+                            ] as const
+                          ).map((opt) => {
+                            const effectiveFloor = integratedTallyQuote.input.floorType || 'parter';
+                            const active = effectiveFloor === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() =>
+                                  void handleAdjustIntegratedQuoteParams({
+                                    floorType: opt.id,
+                                    floorEstimatedByBot: false,
+                                  })
+                                }
+                                className={`rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
+                                  active
+                                    ? 'bg-indigo-600 text-white shadow-2xs'
+                                    : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-indigo-300'
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Ilość domków */}
+                        <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                          <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Ilość:</span>
+                          <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50">
                             <button
-                              key={m2}
                               type="button"
-                              disabled={recalculatingTally}
+                              disabled={integratedTallyQuote.quantity <= 1}
                               onClick={() =>
                                 void handleAdjustIntegratedQuoteParams({
-                                  areaM2: m2,
-                                  areaEstimatedByBot: false,
-                                  areaIsTotalUsable: false,
+                                  quantity: Math.max(1, integratedTallyQuote.quantity - 1),
                                 })
                               }
+                              className="px-2 py-0.5 text-[11px] font-extrabold text-slate-700 hover:bg-slate-200/70 disabled:opacity-40 rounded-l-lg"
+                              title="Zmniejsz liczbę domków"
+                            >
+                              −
+                            </button>
+                            <span className="px-2 text-[10px] font-extrabold text-slate-900">
+                              {integratedTallyQuote.quantity} szt.
+                            </span>
+                            <button
+                              type="button"
+                              disabled={integratedTallyQuote.quantity >= 20}
+                              onClick={() =>
+                                void handleAdjustIntegratedQuoteParams({
+                                  quantity: Math.min(20, integratedTallyQuote.quantity + 1),
+                                })
+                              }
+                              className="px-2 py-0.5 text-[11px] font-extrabold text-slate-700 hover:bg-slate-200/70 disabled:opacity-40 rounded-r-lg"
+                              title="Zwiększ liczbę domków"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {recalculatingTally && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Przeliczam cennik...
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Rząd 2: Standard / Przeznaczenie / Fundament (przeliczają automatycznie stawkę m² i pozycje) */}
+                    <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-1.5">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                        Kryteria:
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {(
+                          [
+                            { id: 'norvil', label: 'NORVIL (Pod klucz)' },
+                            { id: 'deweloperski', label: 'Deweloperski' },
+                          ] as const
+                        ).map((std) => {
+                          const effectiveStd = integratedTallyQuote.input.standard || 'norvil';
+                          const active = effectiveStd === std.id;
+                          return (
+                            <button
+                              key={std.id}
+                              type="button"
+                              onClick={() => void handleAdjustIntegratedQuoteParams({ standard: std.id })}
                               className={`rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
-                                isCurrent
-                                  ? 'bg-emerald-600 text-white shadow-2xs'
+                                active
+                                  ? 'bg-slate-900 text-white shadow-2xs'
+                                  : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-400'
+                              }`}
+                            >
+                              {std.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                        {(
+                          [
+                            { id: 'caloroczny', label: 'Całoroczny' },
+                            { id: 'letniskowy', label: 'Letniskowy' },
+                          ] as const
+                        ).map((ins) => {
+                          const effectiveIns = integratedTallyQuote.input.insulation || 'caloroczny';
+                          const active = effectiveIns === ins.id;
+                          return (
+                            <button
+                              key={ins.id}
+                              type="button"
+                              onClick={() => void handleAdjustIntegratedQuoteParams({ insulation: ins.id })}
+                              className={`rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
+                                active
+                                  ? 'bg-emerald-700 text-white shadow-2xs'
                                   : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-emerald-300'
                               }`}
                             >
-                              {m2}
+                              {ins.label}
                             </button>
                           );
                         })}
-                        <div className="flex items-center rounded-lg border border-slate-200 bg-slate-50 px-1.5 py-0.5">
-                          <input
-                            type="number"
-                            min={15}
-                            max={300}
-                            value={manualAreaInput}
-                            onChange={(e) => setManualAreaInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                const parsed = Math.max(15, Math.min(300, Math.round(Number(manualAreaInput) || 50)));
-                                void handleAdjustIntegratedQuoteParams({
-                                  areaM2: parsed,
-                                  areaEstimatedByBot: false,
-                                  areaIsTotalUsable: false,
-                                });
-                              }
-                            }}
-                            onBlur={() => {
-                              const parsed = Math.round(Number(manualAreaInput));
-                              if (
-                                Number.isFinite(parsed) &&
-                                parsed >= 15 &&
-                                parsed <= 300 &&
-                                parsed !== Math.round(integratedTallyQuote.input.areaM2 || 0)
-                              ) {
-                                void handleAdjustIntegratedQuoteParams({
-                                  areaM2: parsed,
-                                  areaEstimatedByBot: false,
-                                  areaIsTotalUsable: false,
-                                });
-                              }
-                            }}
-                            className="w-10 bg-transparent text-center text-[10px] font-bold text-slate-900 outline-none"
-                            title="Wpisz własny metraż podstawy w m² i naciśnij Enter"
-                          />
-                          <span className="text-[10px] font-semibold text-slate-400">m²</span>
-                        </div>
                       </div>
 
-                      {/* Kondygnacja */}
                       <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
-                        <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Bryła:</span>
+                        <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Fundament:</span>
                         {(
                           [
-                            { id: 'parter', label: 'Parter (×1)' },
-                            { id: 'poddasze', label: 'Poddasze (×1.5)' },
-                            { id: 'pietro', label: 'Piętro (×2)' },
+                            { id: 'brak', label: 'Brak' },
+                            { id: 'slupy', label: 'Słupy' },
+                            { id: 'lawy', label: 'Ławy' },
+                            { id: 'plyta', label: 'Płyta' },
                           ] as const
-                        ).map((opt) => {
-                          const effectiveFloor = integratedTallyQuote.input.floorType || 'parter';
-                          const active = effectiveFloor === opt.id;
+                        ).map((fnd) => {
+                          const active = (integratedTallyQuote.input.foundation || 'brak') === fnd.id;
                           return (
                             <button
-                              key={opt.id}
+                              key={fnd.id}
                               type="button"
-                              disabled={recalculatingTally}
-                              onClick={() =>
-                                void handleAdjustIntegratedQuoteParams({
-                                  floorType: opt.id,
-                                  floorEstimatedByBot: false,
-                                })
-                              }
+                              onClick={() => void handleAdjustIntegratedQuoteParams({ foundation: fnd.id })}
                               className={`rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
                                 active
-                                  ? 'bg-indigo-600 text-white shadow-2xs'
-                                  : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-indigo-300'
+                                  ? 'bg-amber-600 text-white shadow-2xs'
+                                  : 'border border-slate-200 bg-slate-50 text-slate-700 hover:border-amber-300'
                               }`}
                             >
-                              {opt.label}
+                              {fnd.label}
                             </button>
                           );
                         })}
                       </div>
-
-                      {/* Ilość domków */}
-                      <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
-                        <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Ilość:</span>
-                        <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50">
-                          <button
-                            type="button"
-                            disabled={recalculatingTally || integratedTallyQuote.quantity <= 1}
-                            onClick={() =>
-                              void handleAdjustIntegratedQuoteParams({
-                                quantity: Math.max(1, integratedTallyQuote.quantity - 1),
-                              })
-                            }
-                            className="px-2 py-0.5 text-[11px] font-extrabold text-slate-700 hover:bg-slate-200/70 disabled:opacity-40 rounded-l-lg"
-                            title="Zmniejsz liczbę domków"
-                          >
-                            −
-                          </button>
-                          <span className="px-2 text-[10px] font-extrabold text-slate-900">
-                            {integratedTallyQuote.quantity} szt.
-                          </span>
-                          <button
-                            type="button"
-                            disabled={recalculatingTally || integratedTallyQuote.quantity >= 20}
-                            onClick={() =>
-                              void handleAdjustIntegratedQuoteParams({
-                                quantity: Math.min(20, integratedTallyQuote.quantity + 1),
-                              })
-                            }
-                            className="px-2 py-0.5 text-[11px] font-extrabold text-slate-700 hover:bg-slate-200/70 disabled:opacity-40 rounded-r-lg"
-                            title="Zwiększ liczbę domków"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
                     </div>
-
-                    {recalculatingTally && (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Przeliczam...
-                      </span>
-                    )}
                   </div>
 
                   {/* Rozpisane pozycje kosztorysu Tally */}
