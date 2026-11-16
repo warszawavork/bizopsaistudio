@@ -3,12 +3,12 @@ import { StateGraph, END, START, Annotation } from '@langchain/langgraph';
 
 const GEMINI_FALLBACK_CHAIN = [
   'gemini-3-flash-preview',
-  'gemini-3.8-flash',
-  'gemini-3.5-flash',
-  'gemini-3.7-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
   'gemini-flash-lite-latest',
+  'gemini-3.5-flash',
+  'gemini-3.7-flash',
+  'gemini-3.8-flash',
 ];
 const MODEL_COOLDOWN_MS = 90_000;
 const modelCooldownUntil = new Map<string, number>();

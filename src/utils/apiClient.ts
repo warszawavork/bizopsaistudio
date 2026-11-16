@@ -171,13 +171,23 @@ async function postJson<T>(
   const maxRetries = isAiEndpoint ? 2 : 0;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Ochrona przed zawieszeniem połączenia HTTP bez odpowiedzi (np. timeout proxy/lambda)
+    const reqController = new AbortController();
+    const timeoutId = isAiEndpoint
+      ? window.setTimeout(() => reqController.abort(new Error('CLIENT_TIMEOUT')), 48_000)
+      : undefined;
+    const forwardAbort = () => reqController.abort(signal?.reason);
+    signal?.addEventListener('abort', forwardAbort, { once: true });
+
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: buildHeaders(),
         body: serialized,
-        signal,
+        signal: reqController.signal,
       });
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', forwardAbort);
 
       const rawText = await response.text();
       let data: (T & { error?: string }) | null = null;
@@ -193,7 +203,7 @@ async function postJson<T>(
         }
         const errMsg = data?.error || `Błąd serwera HTTP ${response.status}`;
         if (attempt < maxRetries && isRetryableClientError(response.status, errMsg)) {
-          await waitAbortable(attempt === 0 ? 1800 : 3800, signal);
+          await waitAbortable(attempt === 0 ? 1500 : 3200, signal);
           continue;
         }
         throw new Error(errMsg);
@@ -204,15 +214,29 @@ async function postJson<T>(
       }
       return data;
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw err;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', forwardAbort);
+
+      // Anulowanie wywołane świadomie przez użytkownika (przycisk Przerwij)
+      if (signal?.aborted) {
+        throw err instanceof Error ? err : new DOMException('Aborted', 'AbortError');
       }
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (attempt < maxRetries && isRetryableClientError(0, errMsg)) {
-        await waitAbortable(attempt === 0 ? 1800 : 3800, signal);
+
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const isNetworkOrTimeout =
+        /failed to fetch|networkerror|load failed|client_timeout|abort/i.test(rawMsg);
+
+      if (attempt < maxRetries && (isNetworkOrTimeout || isRetryableClientError(0, rawMsg))) {
+        await waitAbortable(attempt === 0 ? 1500 : 3200, signal);
         continue;
       }
-      throw err instanceof Error ? err : new Error(errMsg);
+
+      if (isNetworkOrTimeout) {
+        throw new Error(
+          'Połączenie z serwerem AI (/api/ai) zostało przerwane (chwilowy restart chmury lub brak sieci). Odczekaj 3 sekundy lub odśwież stronę (Ctrl+F5) i spróbuj ponownie.',
+        );
+      }
+      throw err instanceof Error ? err : new Error(rawMsg);
     }
   }
 

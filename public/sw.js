@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bizops-ai-studio-v2';
+const CACHE_NAME = 'bizops-ai-studio-v3';
 
 const CORE_ASSETS = [
   '/',

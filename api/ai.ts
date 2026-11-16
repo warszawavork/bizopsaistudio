@@ -30,21 +30,21 @@ interface ContextStatsResult {
   tokensSavedEstimate: number;
 }
 
-const GEMINI_MODEL = 'gemini-3.8-flash';
+const GEMINI_MODEL = 'gemini-3-flash-preview';
 const MODEL_FALLBACK_CHAIN = [
-  'gemini-3.8-flash',
   'gemini-3-flash-preview',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
   'gemini-3.5-flash',
   'gemini-3.7-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
-  'gemini-flash-lite-latest',
+  'gemini-3.8-flash',
 ];
 const FAST_HEALTHY_MODELS = [
-  'gemini-3-flash-preview',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
   'gemini-flash-lite-latest',
+  'gemini-3-flash-preview',
 ];
 const MODEL_COOLDOWN_MS = 90_000;
 const modelCooldownUntil = new Map<string, number>();
@@ -363,9 +363,9 @@ function getOrderedModelsForCall(hasMedia: boolean): string[] {
         'gemini-3.5-flash-lite',
         'gemini-3.1-flash-lite',
         'gemini-flash-lite-latest',
-        'gemini-3.8-flash',
         'gemini-3.5-flash',
         'gemini-3.7-flash',
+        'gemini-3.8-flash',
       ]
     : [...MODEL_FALLBACK_CHAIN];
 
@@ -475,7 +475,7 @@ async function callGemini(
 
     const model = candidateModels[i];
     const isLite = model.includes('lite');
-    const timeoutMs = hasMedia ? (isLite ? 22_000 : 14_000) : (isLite ? 13_000 : 9_500);
+    const timeoutMs = hasMedia ? (isLite ? 20_000 : 12_000) : (isLite ? 12_000 : 6_000);
 
     try {
       return await tryModelOnce(model, Math.min(timeoutMs, maxTotalBudgetMs - elapsed));
@@ -486,7 +486,7 @@ async function callGemini(
         throw new Error(toFriendlyGeminiError(lastError.message));
       }
       if (i < candidateModels.length - 1) {
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 150));
       }
     }
   }
@@ -514,18 +514,21 @@ async function fetchLiveWebContext(
   companyIndustry: string,
   clientMessage: string
 ): Promise<{ summary: string; sources: LiveWebSource[]; searchQueries: string[] }> {
+  const webStart = Date.now();
+  const maxWebBudgetMs = 7000;
   const now = Date.now();
   const webModels = [
     'gemini-3-flash-preview',
-    'gemini-3.8-flash',
-    'gemini-3.5-flash',
     'gemini-flash-lite-latest',
+    'gemini-3.5-flash-lite',
   ].sort((a, b) => ((modelCooldownUntil.get(a) ?? 0) > now ? 1 : 0) - ((modelCooldownUntil.get(b) ?? 0) > now ? 1 : 0));
 
   for (let i = 0; i < webModels.length; i++) {
+    const remaining = maxWebBudgetMs - (Date.now() - webStart);
+    if (remaining < 1500) break;
     const model = webModels[i];
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6500);
+    const timeoutId = setTimeout(() => controller.abort(), Math.min(4000, remaining));
 
     try {
       const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
