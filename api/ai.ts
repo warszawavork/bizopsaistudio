@@ -705,15 +705,27 @@ function quickRegexExtractTallyParams(text: string): Partial<TallyQuoteInput> {
         : null;
   const isPrepFireplace = /miejsce na koz|pod koz|przygotow.*komink|rury spalin/.test(lower);
 
+  const areaEstimated = !areaMatch;
+  const bedroomsMatch = lower.match(/(\d)\s*(?:sypialn|poko)/);
+  const bedroomsCount = bedroomsMatch ? Number(bedroomsMatch[1]) : 0;
+  const isCaloroczny = /całorocz|calorocz|mieszkaln/.test(lower);
+  const proposedArea = areaMatch
+    ? Number(areaMatch[1])
+    : hasUpstairs || bedroomsCount >= 3
+      ? 50
+      : isCaloroczny && bedroomsCount >= 2
+        ? 50
+        : 35;
+
   return {
-    areaM2: areaMatch ? Number(areaMatch[1]) : hasUpstairs ? 50 : 35,
-    areaEstimatedByBot: !areaMatch,
+    areaM2: proposedArea,
+    areaEstimatedByBot: areaEstimated,
     areaIsTotalUsable: /użytkow|uzytkow|całkowit|calkowit/.test(lower),
     floorType: explicitFloor || (hasUpstairs ? 'poddasze' : null),
     floorEstimatedByBot: !explicitFloor,
     quantity: qtyMatch ? Math.max(1, Number(qtyMatch[1])) : 1,
     standard: /dewelopersk/.test(lower) ? 'deweloperski' : /norvil|pod klucz/.test(lower) ? 'norvil' : null,
-    insulation: /letnisk|rekreac/.test(lower) ? 'letniskowy' : /całorocz|calorocz|mieszkaln/.test(lower) ? 'caloroczny' : null,
+    insulation: /letnisk|rekreac/.test(lower) ? 'letniskowy' : isCaloroczny ? 'caloroczny' : null,
     foundation: /płyt|plyt/.test(lower)
       ? 'plyta'
       : /ław|law/.test(lower)
@@ -760,7 +772,7 @@ async function extractTallyParamsFromConversation(
     'Przeanalizuj poniższą rozmowę z klientem i wyciągnij parametry do konfiguratora domu NORVIL (Tally dWO4Oq).',
     'ZASADY KRYTYCZNE:',
     '1. Liczba domków (quantity): jeśli klient pisze np. „2 domki całoroczne”, ustaw quantity=2 (domyślnie 1).',
-    '2. Metraż (areaM2 + areaEstimatedByBot): jeśli klient podał metraż w m² -> wpisz go i ustaw areaEstimatedByBot=false. Jeśli NIE podał liczby m², ale opisał układ pokoi (np. dół salon+kuchnia+sypialnia+łazienka+pom. techniczne, góra 2 sypialnie+łazienka), oszacuj realistyczną powierzchnię zabudowy podstawy dla takiego układu (np. 50 lub 70 m² dla 3 sypialni z piętrem, 35 m² dla małego domku) i USTAW areaEstimatedByBot=true!',
+    '2. Metraż (areaM2 + areaEstimatedByBot): jeśli klient podał metraż w m² -> wpisz go i ustaw areaEstimatedByBot=false. Jeśli NIE podał liczby m², zaproponuj realistyczną powierzchnię zabudowy podstawy dopasowaną do wstępnych potrzeb z rozmowy (np. 35 m² dla domku budżetowego / rekreacyjnego / 1 sypialni, 50 m² dla 2–3 sypialni lub małego domu całorocznego, 70 m² dla większego domu z poddaszem/piętrem) i USTAW areaEstimatedByBot=true!',
     '3. Kondygnacja (floorType + floorEstimatedByBot): jeśli klient pisze tylko „góra 2 sypialnie” bez wskazania skosów/poddasza vs pełnego piętra -> ustaw floorType="poddasze" i floorEstimatedByBot=true. Jeśli jawnie napisał „parter” / „poddasze” / „piętrowy”, ustaw floorEstimatedByBot=false.',
     '4. Kominek: „miejsce na kozę / rury spalinowe / przygotowanie” = "przygotowanie" (NIE "koza"!). Pełny kominek z montażem = "koza".',
     '5. Klimatyzacja (acCount): „klimatyzator góra dół” = 2 szt.',
@@ -1285,6 +1297,20 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         success: true,
         quote,
         usage: extraction.usage,
+        latencyMs: Date.now() - startedAt,
+      });
+      return;
+    }
+
+    if (action === 'tally_recalculate') {
+      const rawInput = (body.input && typeof body.input === 'object' ? body.input : {}) as Partial<TallyQuoteInput>;
+      const tallyFormId = String(body.tallyFormId || 'dWO4Oq');
+      const liveTallyData = await getLiveTallyData(tallyFormId, false);
+      const quote = evaluateTallyQuoteFromLiveData(rawInput, liveTallyData);
+
+      sendJson(res, 200, {
+        success: true,
+        quote,
         latencyMs: Date.now() - startedAt,
       });
       return;

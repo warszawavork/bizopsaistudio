@@ -347,6 +347,17 @@ export async function extractAndEvaluateTallyQuote(params: {
   return postJson('/api/ai', { action: 'tally_extract_and_quote', ...params });
 }
 
+export async function recalculateTallyQuote(params: {
+  input: Partial<import('../types').TallyQuoteInput>;
+  tallyFormId?: string;
+}): Promise<{
+  success: boolean;
+  quote: TallyQuoteEvaluation;
+  latencyMs: number;
+}> {
+  return postJson('/api/ai', { action: 'tally_recalculate', ...params });
+}
+
 export async function translateSalesReply(params: {
   subject: string;
   body: string;

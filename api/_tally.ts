@@ -377,8 +377,8 @@ export function evaluateTallyQuoteFromLiveData(
       : null;
 
   const areaEstimated = !explicitArea || Boolean(rawInput.areaEstimatedByBot);
-  // Jeśli klient nie podał metrażu (np. opisał tylko układ pokoi góra/dół), przyjmujemy orientacyjnie 50 m² dla piętrowego/poddasza lub 35 m² dla parteru
-  let footprintM2: number = explicitArea ?? (floorMult > 1 ? 50 : 35);
+  // Jeśli klient nie podał metrażu (np. opisał tylko układ pokoi góra/dół lub przeznaczenie), proponujemy orientacyjną bazę: 50 m² dla piętrowego/poddasza/całorocznego lub 35 m² dla małego domku parterowego
+  let footprintM2: number = explicitArea ?? (floorMult > 1 || rawInput.insulation === 'caloroczny' ? 50 : 35);
 
   if (explicitArea && !rawInput.areaEstimatedByBot && rawInput.areaIsTotalUsable && floorMult > 1) {
     footprintM2 = Math.max(15, Math.round(explicitArea / floorMult));
@@ -664,8 +664,8 @@ export function evaluateTallyQuoteFromLiveData(
   if (!standard) assumptions.push(`Standard ${effectiveStd === 'deweloperski' ? 'Deweloperski' : 'NORVIL'}`);
   if (quantity > 1) assumptions.push(`ilość: ${quantity} domki`);
   const assumedSummary = isIllustrativeEstimate
-    ? `Kalkulacja przykładowa i pomocnicza (niepotwierdzona przez klienta) — założenia tymczasowe: ${assumptions.join(', ')}.`
-    : 'Kalkulacja oparta bezpośrednio na parametrach wskazanych przez klienta.';
+    ? `Propozycja wstępna bota (niepotwierdzona przez klienta) — założenia: ${assumptions.join(', ')}. Możesz poniżej zmienić metraż, kondygnację i liczbę domków.`
+    : 'Kalkulacja oparta na wybranych parametrach.';
 
   const normalizedInput: TallyQuoteInput = {
     areaM2: footprintM2,
