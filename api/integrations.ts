@@ -174,12 +174,17 @@ function parseTallyWebhookSubmission(body: Record<string, unknown>) {
       email = resolved;
     } else if (lower.includes('tel') || lower.includes('phone')) {
       phone = resolved;
-    } else if (lower.includes('metraż') || lower.includes('metraz')) {
-      areaM2 = resolved;
+    } else if (
+      lower.includes('metraż') ||
+      lower.includes('metraz') ||
+      lower.includes('powierzchni') ||
+      /\bm[2²]\b/i.test(label)
+    ) {
+      areaM2 = resolved.replace(/[^\d.,]/g, '') || resolved;
     } else if (lower.includes('brutto') || lower.includes('finalsumbrutto')) {
       const n = Number(resolved.replace(/[^\d.,]/g, '').replace(',', '.'));
       if (Number.isFinite(n) && n > 0) grossPln = Math.round(n);
-    } else if (lower.includes('multiplier') || lower.includes('netto')) {
+    } else if (lower.includes('multiplier') || lower.includes('netto') || lower.includes('wartość')) {
       const n = Number(resolved.replace(/[^\d.,]/g, '').replace(',', '.'));
       if (Number.isFinite(n) && n > 1000 && !netPln) netPln = Math.round(n);
     }

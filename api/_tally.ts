@@ -295,7 +295,7 @@ export async function getLiveTallyData(formId = 'dWO4Oq', forceRefresh = false):
   try {
     const res = await fetch(`https://tally.so/r/${encodeURIComponent(cleanId)}`, {
       headers: { 'User-Agent': 'BizOpsAIStudio/1.0 (+live-cpq-engine)' },
-      signal: AbortSignal.timeout(6000),
+      signal: AbortSignal.timeout(4500),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
@@ -316,6 +316,12 @@ export async function getLiveTallyData(formId = 'dWO4Oq', forceRefresh = false):
       ...entry,
     };
   } catch {
+    if (cached) {
+      return {
+        formId: cleanId,
+        ...cached,
+      };
+    }
     const fallbackRates = extractRatesFromVars(new Map());
     const contextText = buildStructuredCpqContext(
       cleanId,
@@ -345,12 +351,10 @@ export async function getLiveTallyCpqContext(formId = 'dWO4Oq') {
   };
 }
 
-export async function evaluateTallyQuote(
+export function evaluateTallyQuoteFromLiveData(
   rawInput: Partial<TallyQuoteInput>,
-  formId = 'dWO4Oq',
-  forceRefresh = true
-): Promise<TallyQuoteEvaluation> {
-  const live = await getLiveTallyData(formId, forceRefresh);
+  live: { formId: string; formName: string; rates: TallyLiveRates; liveFetched: boolean }
+): TallyQuoteEvaluation {
   const r = live.rates;
 
   const floorType: 'parter' | 'poddasze' | 'pietro' | null =
@@ -683,4 +687,13 @@ export async function evaluateTallyQuote(
     missingQuestions,
     formattedQuoteBlock,
   };
+}
+
+export async function evaluateTallyQuote(
+  rawInput: Partial<TallyQuoteInput>,
+  formId = 'dWO4Oq',
+  forceRefresh = true
+): Promise<TallyQuoteEvaluation> {
+  const live = await getLiveTallyData(formId, forceRefresh);
+  return evaluateTallyQuoteFromLiveData(rawInput, live);
 }

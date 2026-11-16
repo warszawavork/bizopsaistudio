@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TallyQuoteEvaluation, TallyQuoteInput } from '../src/types';
-import { evaluateTallyQuote, getLiveTallyCpqContext } from './_tally';
+import { evaluateTallyQuoteFromLiveData, getLiveTallyCpqContext, getLiveTallyData } from './_tally';
 
 interface KnowledgeTileInput {
   id: string;
@@ -432,19 +432,21 @@ function toFriendlyGeminiError(rawMsg: string): string {
   return rawMsg;
 }
 
-function getOrderedModelsForCall(hasMedia: boolean): string[] {
+function getOrderedModelsForCall(hasMedia: boolean, preferFast = false): string[] {
   const now = Date.now();
-  const baseOrder = hasMedia
-    ? [
-        'gemini-3-flash-preview',
-        'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite',
-        'gemini-flash-lite-latest',
-        'gemini-3.5-flash',
-        'gemini-3.7-flash',
-        'gemini-3.8-flash',
-      ]
-    : [...MODEL_FALLBACK_CHAIN];
+  const baseOrder = preferFast
+    ? [...FAST_HEALTHY_MODELS, 'gemini-3.5-flash', 'gemini-3.7-flash']
+    : hasMedia
+      ? [
+          'gemini-3-flash-preview',
+          'gemini-3.5-flash-lite',
+          'gemini-3.1-flash-lite',
+          'gemini-flash-lite-latest',
+          'gemini-3.5-flash',
+          'gemini-3.7-flash',
+          'gemini-3.8-flash',
+        ]
+      : [...MODEL_FALLBACK_CHAIN];
 
   const healthy: string[] = [];
   const cooling: string[] = [];
@@ -463,17 +465,18 @@ function getOrderedModelsForCall(hasMedia: boolean): string[] {
 
 async function callGemini(
   apiKey: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  options?: { preferFast?: boolean; maxBudgetMs?: number }
 ): Promise<{
   text: string;
   model: string;
   usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
 }> {
   const startedCallAt = Date.now();
-  const maxTotalBudgetMs = 46_000;
+  const maxTotalBudgetMs = options?.maxBudgetMs ?? 46_000;
   const serialized = JSON.stringify(payload);
   const hasMedia = serialized.includes('inlineData');
-  const candidateModels = getOrderedModelsForCall(hasMedia);
+  const candidateModels = getOrderedModelsForCall(hasMedia, Boolean(options?.preferFast));
 
   let lastError: Error = new Error('Nie udało się połączyć z modelem Gemini.');
 
@@ -704,11 +707,51 @@ async function fetchLiveWebContext(
   return { summary: '', sources: [], searchQueries: [] };
 }
 
+function quickRegexExtractTallyParams(text: string): Partial<TallyQuoteInput> {
+  const lower = text.toLowerCase();
+  const areaMatch = lower.match(/(\d{2,3})\s*(?:m2|m²|metr)/);
+  const kmMatch = lower.match(/(\d{2,4})\s*km\b/);
+  return {
+    areaM2: areaMatch ? Number(areaMatch[1]) : null,
+    areaIsTotalUsable: /użytkow|uzytkow|całkowit|calkowit/.test(lower),
+    standard: /dewelopersk/.test(lower) ? 'deweloperski' : /norvil|pod klucz/.test(lower) ? 'norvil' : null,
+    insulation: /letnisk|rekreac/.test(lower) ? 'letniskowy' : /całorocz|calorocz|mieszkaln/.test(lower) ? 'caloroczny' : null,
+    floorType: /piętrow|pietrow|pełne piętro|pelne pietro/.test(lower)
+      ? 'pietro'
+      : /poddasz/.test(lower)
+        ? 'poddasze'
+        : /parter/.test(lower)
+          ? 'parter'
+          : null,
+    foundation: /płyt|plyt/.test(lower)
+      ? 'plyta'
+      : /ław|law/.test(lower)
+        ? 'lawy'
+        : /słup|slup|geo/.test(lower)
+          ? 'slupy'
+          : /bez fundament/.test(lower)
+            ? 'brak'
+            : null,
+    underfloorHeating: /podłogówk|podlogowk|ogrzewanie podłogowe/.test(lower) ? true : null,
+    bathroom: /łazienk.*premium|lazienk.*premium/.test(lower)
+      ? 'premium'
+      : /łazienk|lazienk/.test(lower)
+        ? 'podstawowy'
+        : null,
+    fireplace: /kominek|koza/.test(lower) ? 'koza' : null,
+    kitchenPkg: /kuchni/.test(lower) && /mebl/.test(lower) ? 'kuchnia_meble' : /kuchni/.test(lower) ? 'kuchnia' : null,
+    roofAngleMpzp: /mpzp|kąt dachu|kat dachu/.test(lower) ? true : null,
+    deliveryKm: kmMatch ? Number(kmMatch[1]) : 0,
+    vatRate: /23%/.test(lower) || /letnisk|firma|b2b/.test(lower) ? 23 : 8,
+  };
+}
+
 async function extractTallyParamsFromConversation(
   apiKey: string,
   threadHistory: Array<{ role?: string; text?: string }>,
   clientMessage: string,
-  advisorNotes: string
+  advisorNotes: string,
+  maxBudgetMs = 11_000
 ): Promise<{
   input: Partial<TallyQuoteInput>;
   usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
@@ -730,70 +773,81 @@ async function extractTallyParamsFromConversation(
     transcript,
   ].join('\n');
 
-  const res = await callGemini(apiKey, {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: 'OBJECT',
-        properties: {
-          areaM2: { type: 'NUMBER' },
-          areaIsTotalUsable: { type: 'BOOLEAN' },
-          standard: { type: 'STRING', enum: ['unknown', 'deweloperski', 'norvil'] },
-          insulation: { type: 'STRING', enum: ['unknown', 'letniskowy', 'caloroczny'] },
-          floorType: { type: 'STRING', enum: ['unknown', 'parter', 'poddasze', 'pietro'] },
-          foundation: { type: 'STRING', enum: ['unknown', 'brak', 'slupy', 'lawy', 'plyta'] },
-          architectPkg: {
-            type: 'STRING',
-            enum: ['unknown', 'none', 'letniskowy', 'mieszkalny_70', 'mieszkalny_120', 'premium'],
+  try {
+    const res = await callGemini(
+      apiKey,
+      {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              areaM2: { type: 'NUMBER' },
+              areaIsTotalUsable: { type: 'BOOLEAN' },
+              standard: { type: 'STRING', enum: ['unknown', 'deweloperski', 'norvil'] },
+              insulation: { type: 'STRING', enum: ['unknown', 'letniskowy', 'caloroczny'] },
+              floorType: { type: 'STRING', enum: ['unknown', 'parter', 'poddasze', 'pietro'] },
+              foundation: { type: 'STRING', enum: ['unknown', 'brak', 'slupy', 'lawy', 'plyta'] },
+              architectPkg: {
+                type: 'STRING',
+                enum: ['unknown', 'none', 'letniskowy', 'mieszkalny_70', 'mieszkalny_120', 'premium'],
+              },
+              underfloorHeating: { type: 'STRING', enum: ['unknown', 'tak', 'nie'] },
+              heatersCount: { type: 'INTEGER' },
+              acCount: { type: 'INTEGER' },
+              bathroom: { type: 'STRING', enum: ['unknown', 'none', 'podstawowy', 'premium'] },
+              coveredTerraceM2: { type: 'NUMBER' },
+              openTerraceM2: { type: 'NUMBER' },
+              deliveryKm: { type: 'NUMBER' },
+              deliveryModules: { type: 'INTEGER' },
+              kitchenPkg: { type: 'STRING', enum: ['unknown', 'none', 'umeblowanie', 'kuchnia', 'kuchnia_meble'] },
+              fireplace: { type: 'STRING', enum: ['unknown', 'none', 'przygotowanie', 'koza'] },
+              roofAngleMpzp: { type: 'STRING', enum: ['unknown', 'tak', 'nie'] },
+              vatRate: { type: 'INTEGER', enum: [8, 23] },
+            },
+            required: ['areaM2', 'standard', 'insulation', 'floorType', 'foundation'],
           },
-          underfloorHeating: { type: 'STRING', enum: ['unknown', 'tak', 'nie'] },
-          heatersCount: { type: 'INTEGER' },
-          acCount: { type: 'INTEGER' },
-          bathroom: { type: 'STRING', enum: ['unknown', 'none', 'podstawowy', 'premium'] },
-          coveredTerraceM2: { type: 'NUMBER' },
-          openTerraceM2: { type: 'NUMBER' },
-          deliveryKm: { type: 'NUMBER' },
-          deliveryModules: { type: 'INTEGER' },
-          kitchenPkg: { type: 'STRING', enum: ['unknown', 'none', 'umeblowanie', 'kuchnia', 'kuchnia_meble'] },
-          fireplace: { type: 'STRING', enum: ['unknown', 'none', 'przygotowanie', 'koza'] },
-          roofAngleMpzp: { type: 'STRING', enum: ['unknown', 'tak', 'nie'] },
-          vatRate: { type: 'INTEGER', enum: [8, 23] },
         },
-        required: ['areaM2', 'standard', 'insulation', 'floorType', 'foundation'],
       },
-    },
-  });
+      { preferFast: true, maxBudgetMs }
+    );
 
-  const raw = parseGeminiJson<Record<string, unknown>>(res.text);
-  const opt = <T extends string>(val: unknown): T | null =>
-    typeof val === 'string' && val !== 'unknown' ? (val as T) : null;
+    const raw = parseGeminiJson<Record<string, unknown>>(res.text);
+    const opt = <T extends string>(val: unknown): T | null =>
+      typeof val === 'string' && val !== 'unknown' ? (val as T) : null;
 
-  const input: Partial<TallyQuoteInput> = {
-    areaM2: typeof raw.areaM2 === 'number' && raw.areaM2 > 0 ? raw.areaM2 : null,
-    areaIsTotalUsable: Boolean(raw.areaIsTotalUsable),
-    standard: opt<'deweloperski' | 'norvil'>(raw.standard),
-    insulation: opt<'letniskowy' | 'caloroczny'>(raw.insulation),
-    floorType: opt<'parter' | 'poddasze' | 'pietro'>(raw.floorType),
-    foundation: opt<'brak' | 'slupy' | 'lawy' | 'plyta'>(raw.foundation),
-    architectPkg: opt<'none' | 'letniskowy' | 'mieszkalny_70' | 'mieszkalny_120' | 'premium'>(raw.architectPkg),
-    underfloorHeating:
-      raw.underfloorHeating === 'tak' ? true : raw.underfloorHeating === 'nie' ? false : null,
-    heatersCount: typeof raw.heatersCount === 'number' ? raw.heatersCount : 0,
-    acCount: typeof raw.acCount === 'number' ? raw.acCount : 0,
-    bathroom: opt<'none' | 'podstawowy' | 'premium'>(raw.bathroom),
-    coveredTerraceM2: typeof raw.coveredTerraceM2 === 'number' ? raw.coveredTerraceM2 : 0,
-    openTerraceM2: typeof raw.openTerraceM2 === 'number' ? raw.openTerraceM2 : 0,
-    deliveryKm: typeof raw.deliveryKm === 'number' ? raw.deliveryKm : 0,
-    deliveryModules: typeof raw.deliveryModules === 'number' ? raw.deliveryModules : 0,
-    kitchenPkg: opt<'none' | 'umeblowanie' | 'kuchnia' | 'kuchnia_meble'>(raw.kitchenPkg),
-    fireplace: opt<'none' | 'przygotowanie' | 'koza'>(raw.fireplace),
-    roofAngleMpzp: raw.roofAngleMpzp === 'tak' ? true : raw.roofAngleMpzp === 'nie' ? false : null,
-    vatRate: raw.vatRate === 23 ? 23 : 8,
-  };
+    const input: Partial<TallyQuoteInput> = {
+      areaM2: typeof raw.areaM2 === 'number' && raw.areaM2 > 0 ? raw.areaM2 : null,
+      areaIsTotalUsable: Boolean(raw.areaIsTotalUsable),
+      standard: opt<'deweloperski' | 'norvil'>(raw.standard),
+      insulation: opt<'letniskowy' | 'caloroczny'>(raw.insulation),
+      floorType: opt<'parter' | 'poddasze' | 'pietro'>(raw.floorType),
+      foundation: opt<'brak' | 'slupy' | 'lawy' | 'plyta'>(raw.foundation),
+      architectPkg: opt<'none' | 'letniskowy' | 'mieszkalny_70' | 'mieszkalny_120' | 'premium'>(raw.architectPkg),
+      underfloorHeating:
+        raw.underfloorHeating === 'tak' ? true : raw.underfloorHeating === 'nie' ? false : null,
+      heatersCount: typeof raw.heatersCount === 'number' ? raw.heatersCount : 0,
+      acCount: typeof raw.acCount === 'number' ? raw.acCount : 0,
+      bathroom: opt<'none' | 'podstawowy' | 'premium'>(raw.bathroom),
+      coveredTerraceM2: typeof raw.coveredTerraceM2 === 'number' ? raw.coveredTerraceM2 : 0,
+      openTerraceM2: typeof raw.openTerraceM2 === 'number' ? raw.openTerraceM2 : 0,
+      deliveryKm: typeof raw.deliveryKm === 'number' ? raw.deliveryKm : 0,
+      deliveryModules: typeof raw.deliveryModules === 'number' ? raw.deliveryModules : 0,
+      kitchenPkg: opt<'none' | 'umeblowanie' | 'kuchnia' | 'kuchnia_meble'>(raw.kitchenPkg),
+      fireplace: opt<'none' | 'przygotowanie' | 'koza'>(raw.fireplace),
+      roofAngleMpzp: raw.roofAngleMpzp === 'tak' ? true : raw.roofAngleMpzp === 'nie' ? false : null,
+      vatRate: raw.vatRate === 23 ? 23 : 8,
+    };
 
-  return { input, usage: res.usage };
+    return { input, usage: res.usage };
+  } catch {
+    return {
+      input: quickRegexExtractTallyParams(transcript),
+      usage: { promptTokens: 0, candidatesTokens: 0, totalTokens: 0 },
+    };
+  }
 }
 
 export default async function handler(req: IncomingMessage & { body?: unknown }, res: ServerResponse): Promise<void> {
@@ -1217,13 +1271,11 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         return;
       }
 
-      const extraction = await extractTallyParamsFromConversation(
-        apiKey,
-        threadHistory,
-        clientMessage,
-        advisorNotes
-      );
-      const quote = await evaluateTallyQuote(extraction.input, tallyFormId, true);
+      const [extraction, liveTallyData] = await Promise.all([
+        extractTallyParamsFromConversation(apiKey, threadHistory, clientMessage, advisorNotes, 14_000),
+        getLiveTallyData(tallyFormId, true),
+      ]);
+      const quote = evaluateTallyQuoteFromLiveData(extraction.input, liveTallyData);
 
       sendJson(res, 200, {
         success: true,
@@ -1288,19 +1340,25 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           convoForQuote
         );
 
-      const [liveWeb, liveTally, autoExtracted] = await Promise.all([
+      const [liveWeb, liveTallyData, autoExtracted] = await Promise.all([
         useWebKnowledge
           ? fetchLiveWebContext(apiKey, companyIndustry, clientMessage)
           : Promise.resolve({ summary: '', sources: [], searchQueries: [] }),
-        useTallyConfig ? getLiveTallyCpqContext(tallyFormId) : Promise.resolve(null),
+        useTallyConfig ? getLiveTallyData(tallyFormId, false) : Promise.resolve(null),
         shouldAutoRunTallyEngine
-          ? extractTallyParamsFromConversation(apiKey, threadHistory, clientMessage, advisorNotes).catch(() => null)
+          ? extractTallyParamsFromConversation(apiKey, threadHistory, clientMessage, advisorNotes, 7_500)
           : Promise.resolve(null),
       ]);
 
+      const liveTally = liveTallyData
+        ? { contextText: liveTallyData.contextText, formName: liveTallyData.formName }
+        : null;
+
       const activeTallyQuote: TallyQuoteEvaluation | null =
         lockedTallyQuote ||
-        (autoExtracted ? await evaluateTallyQuote(autoExtracted.input, tallyFormId, false) : null);
+        (autoExtracted && liveTallyData
+          ? evaluateTallyQuoteFromLiveData(autoExtracted.input, liveTallyData)
+          : null);
 
       const replyLangInstruction =
         replyLanguage === 'pl'

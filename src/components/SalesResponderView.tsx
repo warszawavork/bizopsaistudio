@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   Calculator,
@@ -288,16 +288,54 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [savingChatsCloud, setSavingChatsCloud] = useState<boolean>(false);
   const [integratedTallyQuote, setIntegratedTallyQuote] = useState<TallyQuoteEvaluation | null>(null);
   const [integratingTally, setIntegratingTally] = useState<boolean>(false);
+  const deletedChatIdsRef = useRef<Set<string>>(new Set());
 
   const activeChat = chatThreads.find((c) => c.id === activeChatId) ?? null;
 
+  const compactThreadMessages = (msgs: ClientChatMessage[]): ClientChatMessage[] => {
+    const trimmed = msgs.slice(-30);
+    return trimmed.map((m, idx) =>
+      idx >= trimmed.length - 2 ? m : { ...m, reply: undefined }
+    );
+  };
+
   const pruneThreadsForStorage = (list: ClientChatThread[]): ClientChatThread[] => {
     // Gwiazdkowane czaty sa chronione na stale; starsze niegwiazdkowane trzymamy do 45 sztuk
-    const starred = list.filter((t) => t.starred);
-    const unstarred = [...list.filter((t) => !t.starred)]
+    const compacted = list.map((t) => ({
+      ...t,
+      messages: compactThreadMessages(t.messages),
+    }));
+    const starred = compacted.filter((t) => t.starred);
+    const unstarred = [...compacted.filter((t) => !t.starred)]
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, 45);
     return [...starred, ...unstarred];
+  };
+
+  const mergeThreadsSafely = (
+    cloudList: ClientChatThread[],
+    localList: ClientChatThread[]
+  ): ClientChatThread[] => {
+    const byId = new Map<string, ClientChatThread>();
+    for (const c of cloudList) {
+      if (!deletedChatIdsRef.current.has(c.id)) {
+        byId.set(c.id, c);
+      }
+    }
+    for (const l of localList) {
+      if (deletedChatIdsRef.current.has(l.id)) continue;
+      const existing = byId.get(l.id);
+      if (!existing) {
+        byId.set(l.id, l);
+      } else {
+        const lTime = Date.parse(l.updatedAt) || 0;
+        const cTime = Date.parse(existing.updatedAt) || 0;
+        if (lTime >= cTime) {
+          byId.set(l.id, { ...l, starred: l.starred || existing.starred });
+        }
+      }
+    }
+    return pruneThreadsForStorage(Array.from(byId.values()));
   };
 
   const persistChatThreads = (nextRaw: ClientChatThread[]) => {
@@ -364,14 +402,19 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   useEffect(() => {
     let cancelled = false;
+    deletedChatIdsRef.current.clear();
+    setIntegratedTallyQuote(null);
+    setError(null);
+    setChannelStatus(null);
     const hydrateWorkspace = async () => {
       try {
         const localRaw = localStorage.getItem(`${CHAT_THREADS_KEY}_${preset.id}`);
-        if (localRaw) setChatThreads(JSON.parse(localRaw) as ClientChatThread[]);
+        setChatThreads(localRaw ? (JSON.parse(localRaw) as ClientChatThread[]) : []);
         const savedActive = localStorage.getItem(`${ACTIVE_CHAT_KEY}_${preset.id}`);
-        if (savedActive) setActiveChatId(savedActive);
+        setActiveChatId(savedActive || null);
       } catch {
-        // ignore
+        setChatThreads([]);
+        setActiveChatId(null);
       }
 
       const [idbLinks, idbObjs, idbHist, idbChats] = await Promise.all([
@@ -385,7 +428,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       if (idbObjs?.payload?.length) setObjections(idbObjs.payload);
       if (idbHist?.payload) setReplyHistory(idbHist.payload);
       if (Array.isArray(idbChats?.payload) && idbChats.payload.length > 0) {
-        setChatThreads(idbChats.payload);
+        setChatThreads((prev) => mergeThreadsSafely(idbChats.payload, prev));
       }
 
       try {
@@ -410,13 +453,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         }
         if (Array.isArray(cloud.state.chat_threads)) {
           const cloudChats = cloud.state.chat_threads as ClientChatThread[];
-          setChatThreads(cloudChats);
-          try {
-            localStorage.setItem(`${CHAT_THREADS_KEY}_${preset.id}`, JSON.stringify(cloudChats));
-          } catch {
-            // ignore
-          }
-          void idbSaveWorkspaceItem(preset.id, 'chat_threads', cloudChats);
+          setChatThreads((prev) => {
+            const merged = mergeThreadsSafely(cloudChats, prev);
+            try {
+              localStorage.setItem(`${CHAT_THREADS_KEY}_${preset.id}`, JSON.stringify(merged));
+            } catch {
+              // ignore
+            }
+            void idbSaveWorkspaceItem(preset.id, 'chat_threads', merged);
+            return merged;
+          });
         }
       } catch {
         // Offline gracefully uses IDB / localStorage
@@ -887,6 +933,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   };
 
   const handleDeleteChat = (chatId: string) => {
+    deletedChatIdsRef.current.add(chatId);
     const next = chatThreads.filter((c) => c.id !== chatId);
     persistChatThreads(next);
     if (activeChatId === chatId) {
@@ -894,6 +941,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       setThreadHistory([]);
       setClientMessage('');
       setAdvisorNotes('');
+      setIntegratedTallyQuote(null);
     }
     setChannelStatus('Usunięto wybrany czat z historii.');
   };
@@ -1474,10 +1522,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               rows={activeChat && activeChat.messages.length > 0 ? 5 : 8}
               value={clientMessage}
               onChange={(e) => setClientMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && clientMessage.trim() && !loading) {
+                  e.preventDefault();
+                  void handleGenerate();
+                }
+              }}
               placeholder={
                 activeChat && activeChat.messages.length > 0
-                  ? 'Wklej kolejną odpowiedź klienta w tym czacie — bot uwzględni to, co było wcześniej...'
-                  : 'Wklej tutaj mail od klienta, zapytanie z formularza WWW albo wiadomość z WhatsApp...'
+                  ? 'Wklej kolejną odpowiedź klienta (Ctrl+Enter aby wysłać do AI) — bot uwzględni wcześniejsze wiadomości...'
+                  : 'Wklej tutaj mail od klienta, zapytanie z formularza WWW albo wiadomość z WhatsApp (Ctrl+Enter aby wygenerować)...'
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
             />
