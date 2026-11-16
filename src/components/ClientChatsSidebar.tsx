@@ -93,17 +93,17 @@ export const ClientChatsSidebar: React.FC<ClientChatsSidebarProps> = ({
   };
 
   return (
-    <aside className="soft-card flex h-full flex-col rounded-3xl border border-slate-200/80 bg-white p-4">
+    <aside className="soft-card flex flex-col rounded-2xl border border-slate-200/80 bg-white p-2.5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-110px)]">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-100">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
-            <MessageSquare className="h-4 w-4" />
+      <div className="flex items-center justify-between gap-1.5 pb-2 border-b border-slate-100">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+            <MessageSquare className="h-3.5 w-3.5" />
           </span>
           <div className="min-w-0">
-            <h3 className="text-xs font-extrabold text-slate-900 truncate">Czaty klientów</h3>
-            <p className="text-[10px] text-slate-500">
-              {threads.length} {threads.length === 1 ? 'wątek' : 'wątków'} • {starredCount} ★
+            <h3 className="text-[11px] font-extrabold text-slate-900 truncate leading-tight">Czaty</h3>
+            <p className="text-[9px] text-slate-500 leading-tight">
+              {threads.length} • {starredCount} ★
             </p>
           </div>
         </div>
@@ -112,50 +112,50 @@ export const ClientChatsSidebar: React.FC<ClientChatsSidebarProps> = ({
           <button
             type="button"
             onClick={onNewChat}
-            className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-2xs transition hover:bg-indigo-600"
+            className="inline-flex items-center gap-0.5 rounded-lg bg-slate-900 px-2 py-1 text-[10px] font-bold text-white shadow-2xs transition hover:bg-indigo-600"
             title="Rozpocznij nowy osobny czat z klientem"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-3 w-3" />
             Nowy
           </button>
           <button
             type="button"
             onClick={onCollapse}
-            className="rounded-xl border border-slate-200 p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+            className="rounded-lg border border-slate-200 p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
             title="Zwiń panel czatów"
           >
-            <PanelLeftClose className="h-3.5 w-3.5" />
+            <PanelLeftClose className="h-3 w-3" />
           </button>
         </div>
       </div>
 
       {/* Search + Filter */}
-      <div className="mt-3 space-y-2">
+      <div className="mt-2 space-y-1.5">
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Szukaj klienta lub treści..."
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 py-1.5 pl-8 pr-7 text-[11px] text-slate-800 outline-none focus:border-indigo-400 focus:bg-white"
+            placeholder="Szukaj czatu..."
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-1 pl-6 pr-6 text-[10px] text-slate-800 outline-none focus:border-indigo-400 focus:bg-white"
           />
           {search && (
             <button
               type="button"
               onClick={() => setSearch('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
             >
-              <X className="h-3 w-3" />
+              <X className="h-2.5 w-2.5" />
             </button>
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-0.5">
           <button
             type="button"
             onClick={() => setFilterMode('all')}
-            className={`rounded-lg py-1 text-[10px] font-bold transition ${
+            className={`rounded-md py-0.5 text-[10px] font-bold transition ${
               filterMode === 'all' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -164,20 +164,20 @@ export const ClientChatsSidebar: React.FC<ClientChatsSidebarProps> = ({
           <button
             type="button"
             onClick={() => setFilterMode('starred')}
-            className={`inline-flex items-center justify-center gap-1 rounded-lg py-1 text-[10px] font-bold transition ${
+            className={`inline-flex items-center justify-center gap-0.5 rounded-md py-0.5 text-[10px] font-bold transition ${
               filterMode === 'starred'
                 ? 'bg-amber-50 text-amber-800 shadow-2xs border border-amber-200/70'
                 : 'text-slate-600 hover:text-amber-700'
             }`}
           >
-            <Star className={`h-3 w-3 ${filterMode === 'starred' ? 'fill-amber-400 text-amber-500' : ''}`} />
+            <Star className={`h-2.5 w-2.5 ${filterMode === 'starred' ? 'fill-amber-400 text-amber-500' : ''}`} />
             Gwiazdki ({starredCount})
           </button>
         </div>
       </div>
 
       {/* Chat List */}
-      <div className="mt-3 flex-1 space-y-1.5 overflow-y-auto pr-0.5 max-h-[620px]">
+      <div className="mt-2 flex-1 space-y-1 overflow-y-auto pr-0.5 min-h-[180px]">
         {visibleThreads.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-3 py-6 text-center">
             <p className="text-[11px] font-semibold text-slate-600">
@@ -215,7 +215,7 @@ export const ClientChatsSidebar: React.FC<ClientChatsSidebarProps> = ({
                     onSelectChat(chat.id);
                   }
                 }}
-                className={`group relative cursor-pointer rounded-2xl border p-2.5 transition ${
+                className={`group relative cursor-pointer rounded-xl border p-2 transition ${
                   isActive
                     ? 'border-indigo-400 bg-indigo-50/70 shadow-2xs ring-1 ring-indigo-200'
                     : chat.starred
@@ -340,25 +340,25 @@ export const ClientChatsSidebar: React.FC<ClientChatsSidebarProps> = ({
                 ) : (
                   <>
                     {/* Row 2: Snippet */}
-                    <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-slate-500">
+                    <p className="mt-0.5 line-clamp-1 text-[10px] leading-snug text-slate-500">
                       {lastMsg
-                        ? `${lastMsg.role === 'advisor' ? 'AI: ' : 'Klient: '}${lastMsg.text}`
-                        : 'Pusty czat — wklej wiadomość...'}
+                        ? `${lastMsg.role === 'advisor' ? 'AI: ' : ''}${lastMsg.text}`
+                        : 'Pusty czat...'}
                     </p>
 
                     {/* Row 3: Meta pills */}
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-600">
-                        {chat.messages.length} wiad.
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <span className="rounded bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-600">
+                        {chat.messages.length}
                       </span>
                       {chat.starred && (
-                        <span className="rounded bg-amber-100/80 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
-                          ★ Zapisany
+                        <span className="rounded bg-amber-100/80 px-1 py-0.5 text-[9px] font-bold text-amber-800">
+                          ★
                         </span>
                       )}
                       {chat.temperature && (
                         <span
-                          className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                          className={`inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-bold ${
                             chat.temperature === 'HOT'
                               ? 'bg-rose-100 text-rose-700'
                               : chat.temperature === 'WARM'
@@ -380,9 +380,9 @@ export const ClientChatsSidebar: React.FC<ClientChatsSidebarProps> = ({
       </div>
 
       {/* Footer sync hint */}
-      <div className="mt-3 border-t border-slate-100 pt-2.5 flex items-center justify-between text-[10px] text-slate-400">
-        <span>{savingCloud ? 'Zapisywanie w chmurze...' : 'Pamięć wątku + Neon DB'}</span>
-        <span className="font-semibold text-amber-600">★ = trwały zapis</span>
+      <div className="mt-2 border-t border-slate-100 pt-2 flex items-center justify-between text-[9px] text-slate-400">
+        <span>{savingCloud ? 'Zapis chmura...' : 'Neon DB'}</span>
+        <span className="font-semibold text-amber-600">★ = trwały</span>
       </div>
     </aside>
   );

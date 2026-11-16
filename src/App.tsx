@@ -929,7 +929,7 @@ export function App() {
       </header>
 
       {/* Main Content Workspace */}
-      <main className={`mx-auto px-4 pt-5 sm:px-6 ${activeTab === 'responder' ? 'max-w-[1440px]' : 'max-w-7xl'}`}>
+      <main className={`mx-auto px-4 pt-5 sm:px-6 ${activeTab === 'responder' ? 'max-w-[1580px]' : 'max-w-7xl'}`}>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200/70 bg-white/65 px-4 py-2.5 text-[11px] text-slate-600 backdrop-blur-sm">
           <span className="font-medium">
             {activeTab === 'responder' && ui.tabDescriptions.responder}

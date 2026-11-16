@@ -321,6 +321,7 @@ export async function generateSalesReply(params: {
   replyLanguage: 'auto' | 'pl' | 'en' | 'no' | 'de';
   useWebKnowledge: boolean;
   useTallyConfig?: boolean;
+  autoCalculateTally?: boolean;
   tallyFormId?: string;
   lockedTallyQuote?: TallyQuoteEvaluation | null;
   includeMiniQuote?: boolean;

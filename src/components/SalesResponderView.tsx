@@ -511,12 +511,20 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   }, [incomingMessage, onClearIncomingMessage]);
 
   useEffect(() => {
+    if (!channelStatus) return;
+    const timer = window.setTimeout(() => setChannelStatus(null), 3500);
+    return () => window.clearTimeout(timer);
+  }, [channelStatus]);
+
+  useEffect(() => {
     if (latestReply) {
       const formattedBase = formatStructuredReplyText(latestReply.replyBody);
       const baseLang = detectDraftLangCode(latestReply.detectedLanguage);
-      const quote = latestReply.tallyQuote ?? null;
-      const defaultMode: 'combined' | 'quote_only' | 'reply_only' =
-        quote && quote.breakdown.length > 0 ? 'combined' : 'reply_only';
+      const quote =
+        latestReply.tallyQuote && latestReply.tallyQuote.breakdown.length > 0
+          ? latestReply.tallyQuote
+          : null;
+      const defaultMode: 'combined' | 'quote_only' | 'reply_only' = quote ? 'combined' : 'reply_only';
       const initialBody =
         defaultMode === 'combined' && quote
           ? stitchReplyAndTallyQuote(formattedBase, quote, baseLang, {
@@ -654,6 +662,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         replyLanguage: langToUse,
         useWebKnowledge,
         useTallyConfig: includeMiniQuote,
+        autoCalculateTally: false,
         includeMiniQuote,
         includedLinks,
         threadHistory: effectiveThread,
@@ -1057,11 +1066,23 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     }));
   };
 
-  const handleIntegrateTallyQuote = async (targetMode?: 'combined' | 'quote_only') => {
+  const handleIntegrateTallyQuote = async (
+    targetMode?: 'combined' | 'quote_only',
+    optionOverrides?: { hideItemizedPrices?: boolean; includeWarsawRef?: boolean }
+  ) => {
     const baseThread = activeChat
       ? activeChat.messages.map((m) => ({ role: m.role, text: m.text }))
       : threadHistory;
     if (!clientMessage.trim() && baseThread.length === 0) return;
+
+    const nextHide = optionOverrides?.hideItemizedPrices ?? hideItemizedPrices;
+    const nextWarsaw = optionOverrides?.includeWarsawRef ?? includeWarsawRef;
+    if (optionOverrides?.hideItemizedPrices !== undefined) {
+      setHideItemizedPrices(optionOverrides.hideItemizedPrices);
+    }
+    if (optionOverrides?.includeWarsawRef !== undefined) {
+      setIncludeWarsawRef(optionOverrides.includeWarsawRef);
+    }
 
     setIntegratingTally(true);
     setError(null);
@@ -1074,11 +1095,11 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       });
       setIntegratedTallyQuote(res.quote);
       setIncludeMiniQuote(true);
-      if (targetMode) {
-        applyReplyOutputMode(targetMode, res.quote);
-      } else if (replyOutputMode !== 'reply_only') {
-        applyReplyOutputMode(replyOutputMode, res.quote);
-      }
+      const effectiveMode = targetMode ?? (replyOutputMode === 'reply_only' ? 'combined' : replyOutputMode);
+      applyReplyOutputMode(effectiveMode, res.quote, baseReplyBody, activeDraftLang, {
+        hideItemizedPrices: nextHide,
+        includeWarsawRef: nextWarsaw,
+      });
       onLogAiCall({
         action: 'responder',
         latencyMs: res.latencyMs,
@@ -1093,6 +1114,11 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     } finally {
       setIntegratingTally(false);
     }
+  };
+
+  const handleClearIntegratedQuote = () => {
+    setIntegratedTallyQuote(null);
+    applyReplyOutputMode('reply_only', null, baseReplyBody, activeDraftLang);
   };
 
   const handleRemoveIntegratedItem = (key: string) => {
@@ -1315,10 +1341,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         </div>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-12 items-start">
+      <div
+        className={`grid gap-4 items-start ${
+          showChatsSidebar
+            ? 'lg:grid-cols-[215px_minmax(340px,0.9fr)_minmax(480px,1.35fr)]'
+            : 'lg:grid-cols-12'
+        }`}
+      >
         {/* SIDEBAR COLUMN: Lista czatów klientów */}
         {showChatsSidebar && (
-          <div className="lg:col-span-3">
+          <div className="min-w-0">
             <ClientChatsSidebar
               threads={chatThreads}
               activeChatId={activeChatId}
@@ -1334,7 +1366,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         )}
 
         {/* CENTER COLUMN: Czat + Wklej wiadomość od klienta */}
-        <div className={`space-y-4 ${showChatsSidebar ? 'lg:col-span-4' : 'lg:col-span-5'}`}>
+        <div className={`min-w-0 space-y-4 ${showChatsSidebar ? '' : 'lg:col-span-5'}`}>
         <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-5 space-y-4">
           {/* Unified Inbox Toggle Bar */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/80 via-violet-50/60 to-emerald-50/60 px-3 py-2">
@@ -2050,7 +2082,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                 <Sparkles className="h-4 w-4 text-indigo-300" />
               )}
               {loading
-                ? 'Przygotowuję odpowiedź i sprawdzam kosztorys Tally...'
+                ? 'Przygotowuję odpowiedź dla klienta...'
                 : 'Generuj odpowiedź dla klienta'}
             </button>
 
@@ -2087,7 +2119,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       </div>
 
       {/* RIGHT COLUMN: Proponowana odpowiedź dla klienta */}
-      <div className={showChatsSidebar ? 'lg:col-span-5' : 'lg:col-span-7'}>
+      <div className={`min-w-0 ${showChatsSidebar ? '' : 'lg:col-span-7'}`}>
         {loading ? (
           <div className="soft-card animate-enter flex h-full min-h-[480px] flex-col justify-between rounded-3xl border border-indigo-200/70 bg-white/90 p-7">
             <div className="space-y-4">
@@ -2450,15 +2482,82 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                 </div>
               )}
 
-              {/* BLOK A: Moduł Kosztorys Tally (dWO4Oq) + Wybór trybu złożenia odpowiedzi */}
-              <div className="rounded-2xl border border-emerald-200/90 bg-gradient-to-br from-emerald-50/60 via-white to-indigo-50/40 p-3.5 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* BLOK A: Polecenia kalkulacyjne Tally (dWO4Oq) — domyślnie zwarty pasek, rozwija się po wyliczeniu */}
+              {!integratedTallyQuote || integratedTallyQuote.breakdown.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200/90 bg-slate-50/80 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white">
-                      <Calculator className="h-3 w-3" />
-                      Kosztorys Tally (dWO4Oq)
+                    <span className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2 py-0.5 text-[10px] font-extrabold text-white">
+                      <Calculator className="h-3 w-3 text-emerald-300" />
+                      Polecenia kalkulacyjne (Tally dWO4Oq)
                     </span>
-                    {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 ? (
+                    <span className="text-[11px] font-medium text-slate-500">
+                      {integratingTally
+                        ? 'Liczenie wyceny na żywo z Tally...'
+                        : 'Tryb bazowy: sama odpowiedź — wybierz polecenie, aby wyliczyć i dopiąć kosztorys'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={integratingTally || loading}
+                      onClick={() => void handleIntegrateTallyQuote('combined', { hideItemizedPrices: false })}
+                      className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-2xs transition hover:bg-emerald-700 disabled:opacity-50"
+                      title="Wylicz pozycje z Tally na bazie rozmowy i dopnij pełny kosztorys pod odpowiedzią"
+                    >
+                      {integratingTally ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Calculator className="h-3 w-3" />
+                      )}
+                      + Wylicz i dołącz kosztorys
+                    </button>
+                    <button
+                      type="button"
+                      disabled={integratingTally || loading}
+                      onClick={() =>
+                        void handleIntegrateTallyQuote('combined', {
+                          includeWarsawRef: true,
+                          hideItemizedPrices: false,
+                        })
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl border border-emerald-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                      title="Wylicz kosztorys i dopnij na dole przykład dostawy z płytą fundamentową do Warszawy"
+                    >
+                      <MapPin className="h-3 w-3" />
+                      + Warszawa + płyta
+                    </button>
+                    <button
+                      type="button"
+                      disabled={integratingTally || loading}
+                      onClick={() =>
+                        void handleIntegrateTallyQuote('combined', { hideItemizedPrices: true })
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                      title="Wylicz zakres z Tally, ale ukryj ceny pozycji — zostaw tylko cenę końcową"
+                    >
+                      <EyeOff className="h-3 w-3" />
+                      Ukryj cenniki (tylko finał)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={integratingTally || loading}
+                      onClick={() => void handleIntegrateTallyQuote('quote_only')}
+                      className="inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[11px] font-bold text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+                      title="Zamień wiadomość na sam czysty kosztorys Tally"
+                    >
+                      Tylko sam kosztorys
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-emerald-200/90 bg-gradient-to-br from-emerald-50/60 via-white to-indigo-50/40 p-3.5 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white">
+                        <Calculator className="h-3 w-3" />
+                        Kosztorys Tally (dWO4Oq)
+                      </span>
                       <span className="text-xs font-extrabold text-slate-900">
                         {integratedTallyQuote.quantity > 1 && (
                           <span className="mr-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-extrabold text-indigo-800">
@@ -2471,104 +2570,103 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                           {integratedTallyQuote.totalGrossPln.toLocaleString('pl-PL')} zł brutto ({integratedTallyQuote.vatRate}% VAT)
                         </span>
                       </span>
-                    ) : (
-                      <span className="text-[11px] font-medium text-slate-500">
-                        {integratingTally ? 'Liczenie wyceny na żywo z Tally...' : 'Brak wyliczonych pozycji w tym zapytaniu'}
-                      </span>
-                    )}
-                  </div>
+                    </div>
 
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 && (
-                      <>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleToggleHideItemizedPrices}
+                        className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold transition ${
+                          hideItemizedPrices
+                            ? 'bg-slate-900 text-white shadow-2xs'
+                            : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                        }`}
+                        title="Ukrywa ceny pojedynczych pozycji w wiadomości — zostawia zakres oraz wyłącznie cenę końcową"
+                      >
+                        {hideItemizedPrices ? <EyeOff className="h-3 w-3 text-amber-300" /> : <Eye className="h-3 w-3" />}
+                        {hideItemizedPrices ? 'Cenniki ukryte (tylko finał)' : 'Ukryj cenniki'}
+                      </button>
+                      {integratedTallyQuote.warsawSlabReference && (
                         <button
                           type="button"
-                          onClick={handleToggleHideItemizedPrices}
-                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold transition ${
-                            hideItemizedPrices
-                              ? 'bg-slate-900 text-white shadow-2xs'
-                              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                          onClick={handleToggleWarsawRef}
+                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
+                            includeWarsawRef
+                              ? 'border border-emerald-400 bg-emerald-100 text-emerald-900'
+                              : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
                           }`}
-                          title="Ukrywa ceny pojedynczych pozycji w wiadomości — zostawia zakres oraz wyłącznie cenę końcową"
+                          title="Dodaje na samym końcu przykładowy koszt domu na płycie fundamentowej z dostawą do Warszawy (~600 km z Przemyśla)"
                         >
-                          {hideItemizedPrices ? <EyeOff className="h-3 w-3 text-amber-300" /> : <Eye className="h-3 w-3" />}
-                          {hideItemizedPrices ? 'Cenniki ukryte (tylko finał)' : 'Ukryj cenniki'}
+                          <MapPin className="h-3 w-3" />
+                          Warszawa + płyta
                         </button>
-                        {integratedTallyQuote.warsawSlabReference && (
-                          <button
-                            type="button"
-                            onClick={handleToggleWarsawRef}
-                            className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
-                              includeWarsawRef
-                                ? 'border border-emerald-400 bg-emerald-100 text-emerald-900'
-                                : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
-                            }`}
-                            title="Dodaje na samym końcu przykładowy koszt domu na płycie fundamentowej z dostawą do Warszawy (~600 km z Przemyśla)"
-                          >
-                            <MapPin className="h-3 w-3" />
-                            Warszawa + płyta
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={handleToggleIllustrativeNotice}
-                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold transition ${
-                            integratedTallyQuote.isIllustrativeEstimate
-                              ? 'bg-amber-500 text-slate-950 shadow-2xs ring-1 ring-amber-600/30'
-                              : 'border border-amber-300 bg-white text-amber-800 hover:bg-amber-50'
-                          }`}
-                          title="Dodaje lub usuwa wyraźną adnotację dla klienta, że wycena ma charakter przykładowy i pomocniczy (niepotwierdzona przez klienta)"
-                        >
-                          <AlertTriangle className="h-3 w-3" />
-                          {integratedTallyQuote.isIllustrativeEstimate
-                            ? 'Kalkulacja przykładowa (pomoc dla klienta): WŁ'
-                            : 'Oznacz jako przykładową'}
-                        </button>
-                        {([8, 23] as const).map((rate) => (
-                          <button
-                            key={rate}
-                            type="button"
-                            onClick={() => handleSwitchIntegratedVat(rate)}
-                            className={`rounded-lg px-2 py-1 text-[10px] font-bold transition ${
-                              integratedTallyQuote.vatRate === rate
-                                ? 'bg-slate-900 text-white'
-                                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
-                            }`}
-                          >
-                            VAT {rate}%
-                          </button>
-                        ))}
-                        {onCreateCrmDeal && (
-                          <button
-                            type="button"
-                            onClick={handleCreateDealFromIntegratedQuote}
-                            className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-indigo-700"
-                            title="Zapisz tę wycenę na tablicy CRM"
-                          >
-                            + Zapisz do CRM
-                          </button>
-                        )}
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      disabled={integratingTally || loading}
-                      onClick={() => void handleIntegrateTallyQuote(replyOutputMode === 'reply_only' ? 'combined' : replyOutputMode)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-[10px] font-bold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
-                      title="Pobierz aktualne ceny z tally.so/r/dWO4Oq i przelicz kosztorys na bazie całej rozmowy"
-                    >
-                      {integratingTally ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-3 w-3" />
                       )}
-                      {integratedTallyQuote ? 'Odśwież z Tally' : 'Wylicz kosztorys Tally'}
-                    </button>
+                      <button
+                        type="button"
+                        onClick={handleToggleIllustrativeNotice}
+                        className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold transition ${
+                          integratedTallyQuote.isIllustrativeEstimate
+                            ? 'bg-amber-500 text-slate-950 shadow-2xs ring-1 ring-amber-600/30'
+                            : 'border border-amber-300 bg-white text-amber-800 hover:bg-amber-50'
+                        }`}
+                        title="Dodaje lub usuwa wyraźną adnotację dla klienta, że wycena ma charakter przykładowy i pomocniczy (niepotwierdzona przez klienta)"
+                      >
+                        <AlertTriangle className="h-3 w-3" />
+                        {integratedTallyQuote.isIllustrativeEstimate
+                          ? 'Kalkulacja przykładowa (pomoc dla klienta): WŁ'
+                          : 'Oznacz jako przykładową'}
+                      </button>
+                      {([8, 23] as const).map((rate) => (
+                        <button
+                          key={rate}
+                          type="button"
+                          onClick={() => handleSwitchIntegratedVat(rate)}
+                          className={`rounded-lg px-2 py-1 text-[10px] font-bold transition ${
+                            integratedTallyQuote.vatRate === rate
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          VAT {rate}%
+                        </button>
+                      ))}
+                      {onCreateCrmDeal && (
+                        <button
+                          type="button"
+                          onClick={handleCreateDealFromIntegratedQuote}
+                          className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-indigo-700"
+                          title="Zapisz tę wycenę na tablicy CRM"
+                        >
+                          + Zapisz do CRM
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={integratingTally || loading}
+                        onClick={() => void handleIntegrateTallyQuote(replyOutputMode === 'reply_only' ? 'combined' : replyOutputMode)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-[10px] font-bold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                        title="Pobierz aktualne ceny z tally.so/r/dWO4Oq i przelicz kosztorys na bazie całej rozmowy"
+                      >
+                        {integratingTally ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3 w-3" />
+                        )}
+                        Odśwież
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearIntegratedQuote}
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-500 hover:bg-rose-50 hover:text-rose-700"
+                        title="Usuń kalkulację i wróć do samej odpowiedzi"
+                      >
+                        <X className="h-3 w-3" />
+                        Zwiń
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                {/* Rozpisane pozycje kosztorysu Tally */}
-                {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 && (
+                  {/* Rozpisane pozycje kosztorysu Tally */}
                   <div className="grid gap-1.5 sm:grid-cols-2">
                     {integratedTallyQuote.breakdown.map((item) => (
                       <div
@@ -2599,79 +2697,67 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       </div>
                     ))}
                   </div>
-                )}
 
-                {integratedTallyQuote && integratedTallyQuote.isIllustrativeEstimate && (
-                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[10px] font-semibold text-amber-950 flex items-start gap-1.5">
-                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600 mt-0.5" />
-                    <span>{integratedTallyQuote.assumedSummary}</span>
+                  {integratedTallyQuote.isIllustrativeEstimate && (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[10px] font-semibold text-amber-950 flex items-start gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600 mt-0.5" />
+                      <span>{integratedTallyQuote.assumedSummary}</span>
+                    </div>
+                  )}
+
+                  {integratedTallyQuote.missingQuestions.length > 0 && (
+                    <p className="text-[10px] text-amber-900 bg-amber-50/90 border border-amber-200/70 rounded-xl px-2.5 py-1.5">
+                      <strong>Brakuje w Tally ({integratedTallyQuote.missingQuestions.length}):</strong>{' '}
+                      {integratedTallyQuote.missingQuestions.slice(0, 4).join(' • ')}
+                    </p>
+                  )}
+
+                  {/* 3 Przyciski trybu złożenia efektu końcowego */}
+                  <div className="flex flex-wrap items-center gap-1.5 border-t border-emerald-200/70 pt-2.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mr-1">
+                      Tryb wiadomości:
+                    </span>
+                    <button
+                      type="button"
+                      disabled={integratingTally}
+                      onClick={() => applyReplyOutputMode('combined')}
+                      className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
+                        replyOutputMode === 'combined'
+                          ? 'bg-slate-900 text-white shadow-xs'
+                          : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
+                      }`}
+                    >
+                      <Link2 className="h-3.5 w-3.5" />
+                      Połącz kosztorys i odpowiedź
+                    </button>
+                    <button
+                      type="button"
+                      disabled={integratingTally}
+                      onClick={() => applyReplyOutputMode('quote_only')}
+                      className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
+                        replyOutputMode === 'quote_only'
+                          ? 'bg-emerald-700 text-white shadow-xs'
+                          : 'border border-slate-200 bg-white text-slate-700 hover:border-emerald-400 hover:text-emerald-800'
+                      }`}
+                    >
+                      <Calculator className="h-3.5 w-3.5" />
+                      Tylko sam kosztorys
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyReplyOutputMode('reply_only')}
+                      className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
+                        replyOutputMode === 'reply_only'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
+                      }`}
+                    >
+                      <Mail className="h-3.5 w-3.5" />
+                      Sama odpowiedź (bez cen)
+                    </button>
                   </div>
-                )}
-
-                {integratedTallyQuote && integratedTallyQuote.missingQuestions.length > 0 && (
-                  <p className="text-[10px] text-amber-900 bg-amber-50/90 border border-amber-200/70 rounded-xl px-2.5 py-1.5">
-                    <strong>Brakuje w Tally ({integratedTallyQuote.missingQuestions.length}):</strong>{' '}
-                    {integratedTallyQuote.missingQuestions.slice(0, 4).join(' • ')}
-                  </p>
-                )}
-
-                {/* 3 Przyciski trybu złożenia efektu końcowego */}
-                <div className="flex flex-wrap items-center gap-1.5 border-t border-emerald-200/70 pt-2.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mr-1">
-                    Tryb wiadomości:
-                  </span>
-                  <button
-                    type="button"
-                    disabled={integratingTally}
-                    onClick={() => {
-                      if (integratedTallyQuote && integratedTallyQuote.breakdown.length > 0) {
-                        applyReplyOutputMode('combined');
-                      } else {
-                        void handleIntegrateTallyQuote('combined');
-                      }
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
-                      replyOutputMode === 'combined'
-                        ? 'bg-slate-900 text-white shadow-xs'
-                        : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
-                    }`}
-                  >
-                    <Link2 className="h-3.5 w-3.5" />
-                    Połącz kosztorys i odpowiedź
-                  </button>
-                  <button
-                    type="button"
-                    disabled={integratingTally}
-                    onClick={() => {
-                      if (integratedTallyQuote && integratedTallyQuote.breakdown.length > 0) {
-                        applyReplyOutputMode('quote_only');
-                      } else {
-                        void handleIntegrateTallyQuote('quote_only');
-                      }
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
-                      replyOutputMode === 'quote_only'
-                        ? 'bg-emerald-700 text-white shadow-xs'
-                        : 'border border-slate-200 bg-white text-slate-700 hover:border-emerald-400 hover:text-emerald-800'
-                    }`}
-                  >
-                    <Calculator className="h-3.5 w-3.5" />
-                    Tylko sam kosztorys
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyReplyOutputMode('reply_only')}
-                    className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
-                      replyOutputMode === 'reply_only'
-                        ? 'bg-indigo-600 text-white shadow-xs'
-                        : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
-                    }`}
-                  >
-                    <Mail className="h-3.5 w-3.5" />
-                    Sama odpowiedź (bez cen)
-                  </button>
                 </div>
-              </div>
+              )}
 
               {/* Editable Subject */}
               <div>

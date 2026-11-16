@@ -1323,6 +1323,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       }
 
       const useTallyConfig = body.useTallyConfig !== false;
+      const autoCalculateTally = body.autoCalculateTally === true;
       const tallyFormId = String(body.tallyFormId || 'dWO4Oq');
       const lockedTallyQuote =
         body.lockedTallyQuote && typeof body.lockedTallyQuote === 'object'
@@ -1338,6 +1339,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       const convoForQuote = `${threadHistory.map((t) => t.text).join(' ')} ${clientMessage} ${advisorNotes}`;
       const shouldAutoRunTallyEngine =
         !lockedTallyQuote &&
+        autoCalculateTally &&
         useTallyConfig &&
         includeMiniQuote &&
         /(dom|metr|m2|m²|wycen|cen|koszt|fundament|piętr|pietr|parter|poddasz|kominek|łazienk|lazienk|kuchni|taras|dewelopersk|norvil|dostaw|tally|budżet|budzet|kwot|pln|zł)/i.test(
@@ -1415,35 +1417,42 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         signatureLines
           ? `PODPIS DORADCY: Zakończ treść maila (replyBody) dokładnie poniższym podpisem:\n${signatureLines}`
           : '',
-        includeMiniQuote
-          ? activeTallyQuote && activeTallyQuote.breakdown.length > 0
-            ? [
-                'ROZDZIAŁ ODPOWIEDZI OD KOSZTORYSU TALLY ORAZ SWOBODNE DOPRECYZOWANIE PYTAŃ:',
-                '1. Odpowiedz najpierw naturalnie i konkretnie na wszystkie pytania klienta na podstawie KAFELKÓW BAZY WIEDZY FIRMY (konstrukcja, ocieplenie, płyta fundamentowa, czas realizacji, płatności, VAT 23% przy najmie, układ powierzchni).',
-                '2. Śmiało podpytaj klienta o wszystkie brakujące szczegóły potrzebne do finalnej oferty (powierzchnia zabudowy, poddasze vs pełne piętro, miejscowość dostawy, standard wykończenia, architekt, finansowanie) — w naturalnej, zróżnicowanej formie dopasowanej do tej konkretnej rozmowy.',
-                '3. NIE wypisuj ręcznie w `replyBody` pełnej tabeli cen ani sum netto/brutto — nasz system na samym końcu wiadomości (tuż przed podpisem) automatycznie dopnie orientacyjną kalkulację' +
-                  (activeTallyQuote.warsawSlabReference
-                    ? ' (wraz z przykładowym kosztem realizacji z płytą fundamentową i dostawą do Warszawy).'
-                    : '.'),
-                activeTallyQuote.isIllustrativeEstimate
-                  ? `4. Jednym zwięzłym zdaniem przed zakończeniem wskaż, że poniższa kalkulacja ma charakter PRZYKŁADOWY i POMOCNICZY (${activeTallyQuote.assumedSummary}) i zostanie doprecyzowana po odpowiedzi na powyższe pytania.`
-                  : '4. Jednym zdaniem wskaż, że podsumowanie wyceny zamieszczono na końcu wiadomości.',
-                activeTallyQuote.missingQuestions.length > 0
-                  ? `\nPYTANIA Z TALLY / KAFELKÓW, O KTÓRE WARTO PODPYTAĆ KLIENTA:\n${activeTallyQuote.missingQuestions.map((q) => `- ${q}`).join('\n')}`
-                  : '',
-              ]
-                .filter(Boolean)
-                .join('\n')
-            : [
-                'MINI-KALKULACJA I ŚMIAŁE WYCENIANIE Z KONFIGURATORA TALLY (dWO4Oq) — STANDARD EXECUTIVE:',
-                'Jeśli klient pyta o cenę, budżet, wycenę domu (parterowy ×1.0, z poddaszem ×1.5, piętrowy ×2.0), fundamenty (słupy 350 / ławy 600 / płyta 750), standard Deweloperski vs NORVIL lub dodatki — ŚMIAŁO korzystaj z sekcji OFICJALNY LIVE CENNIK Z KONFIGURATORA TALLY poniżej i JAWNIE wypunktuj każdą pozycję osobno (dom + fundament + łazienka + kominek + transport + NETTO + VAT + BRUTTO):',
-                activeTallyQuote && activeTallyQuote.missingQuestions.length > 0
-                  ? `• Brakujące dane do wyceny w Tally: ${activeTallyQuote.missingQuestions.slice(0, 5).join('; ')}`
-                  : '',
-              ]
-                .filter(Boolean)
-                .join('\n')
-          : '',
+        !autoCalculateTally && !lockedTallyQuote && !activeTallyQuote
+          ? [
+              'TRYB DOMYŚLNY — SAMA ODPOWIEDŹ (BEZ TABELI KOSZTORYSOWEJ):',
+              '1. Przygotuj merytoryczną, naturalną, przyjazną odpowiedź doradczą na pytania klienta na podstawie KAFELKÓW BAZY WIEDZY FIRMY (konstrukcja, ocieplenie, płyta fundamentowa, standardy, czas realizacji, płatności, VAT 23% przy najmie, układ itp.).',
+              '2. Śmiało podpytaj klienta o brakujące dane potrzebne do kalkulacji (metraż zabudowy/użytkowy, miejscowość dostawy, rodzaj dachu/MPZP, parter vs poddasze/piętro, budżet lub wariant wykończenia).',
+              '3. NIE wypisuj jeszcze kosztorysu pozycja po pozycji ani tabel cenowych w `replyBody` — nasz system ma po prawej stronie oddzielne polecenia kalkulacyjne Tally (`dWO4Oq`), którymi doradca może w 1 kliknięcie wyliczyć i dołączyć kosztorys po wygenerowaniu odpowiedzi.',
+            ].join('\n')
+          : includeMiniQuote
+            ? activeTallyQuote && activeTallyQuote.breakdown.length > 0
+              ? [
+                  'ROZDZIAŁ ODPOWIEDZI OD KOSZTORYSU TALLY ORAZ SWOBODNE DOPRECYZOWANIE PYTAŃ:',
+                  '1. Odpowiedz najpierw naturalnie i konkretnie na wszystkie pytania klienta na podstawie KAFELKÓW BAZY WIEDZY FIRMY (konstrukcja, ocieplenie, płyta fundamentowa, czas realizacji, płatności, VAT 23% przy najmie, układ powierzchni).',
+                  '2. Śmiało podpytaj klienta o wszystkie brakujące szczegóły potrzebne do finalnej oferty (powierzchnia zabudowy, poddasze vs pełne piętro, miejscowość dostawy, standard wykończenia, architekt, finansowanie) — w naturalnej, zróżnicowanej formie dopasowanej do tej konkretnej rozmowy.',
+                  '3. NIE wypisuj ręcznie w `replyBody` pełnej tabeli cen ani sum netto/brutto — nasz system na samym końcu wiadomości (tuż przed podpisem) automatycznie dopnie orientacyjną kalkulację' +
+                    (activeTallyQuote.warsawSlabReference
+                      ? ' (wraz z przykładowym kosztem realizacji z płytą fundamentową i dostawą do Warszawy).'
+                      : '.'),
+                  activeTallyQuote.isIllustrativeEstimate
+                    ? `4. Jednym zwięzłym zdaniem przed zakończeniem wskaż, że poniższa kalkulacja ma charakter PRZYKŁADOWY i POMOCNICZY (${activeTallyQuote.assumedSummary}) i zostanie doprecyzowana po odpowiedzi na powyższe pytania.`
+                    : '4. Jednym zdaniem wskaż, że podsumowanie wyceny zamieszczono na końcu wiadomości.',
+                  activeTallyQuote.missingQuestions.length > 0
+                    ? `\nPYTANIA Z TALLY / KAFELKÓW, O KTÓRE WARTO PODPYTAĆ KLIENTA:\n${activeTallyQuote.missingQuestions.map((q) => `- ${q}`).join('\n')}`
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join('\n')
+              : [
+                  'MINI-KALKULACJA I ŚMIAŁE WYCENIANIE Z KONFIGURATORA TALLY (dWO4Oq) — STANDARD EXECUTIVE:',
+                  'Jeśli klient pyta o cenę, budżet, wycenę domu (parterowy ×1.0, z poddaszem ×1.5, piętrowy ×2.0), fundamenty (słupy 350 / ławy 600 / płyta 750), standard Deweloperski vs NORVIL lub dodatki — ŚMIAŁO korzystaj z sekcji OFICJALNY LIVE CENNIK Z KONFIGURATORA TALLY poniżej i JAWNIE wypunktuj każdą pozycję osobno (dom + fundament + łazienka + kominek + transport + NETTO + VAT + BRUTTO):',
+                  activeTallyQuote && activeTallyQuote.missingQuestions.length > 0
+                    ? `• Brakujące dane do wyceny w Tally: ${activeTallyQuote.missingQuestions.slice(0, 5).join('; ')}`
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join('\n')
+            : '',
         includedLinks.length > 0
           ? `LINKI DO MATERIAŁÓW: Wpleć naturalnie w treść odpowiedzi (replyBody) następujące linki dla klienta:\n${includedLinks.map((l) => `- ${l.label}: ${l.url}`).join('\n')}`
           : '',
