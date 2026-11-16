@@ -625,6 +625,32 @@ export async function syncTallyPricingToKnowledge(formUrlOrId = 'dWO4Oq'): Promi
   return postJson('/api/integrations', { action: 'sync_tally_knowledge', formUrl: formUrlOrId });
 }
 
+export async function detectTelegramChats(botToken: string): Promise<{
+  ok: boolean;
+  botId: string;
+  botUsername: string;
+  botName: string;
+  botUrl: string;
+  webhookConflict: boolean;
+  chats: Array<{ id: string; label: string; type: string }>;
+}> {
+  return postJson('/api/integrations', { action: 'telegram_detect_chat', botToken });
+}
+
+export async function sendTelegramReport(params: {
+  botToken: string;
+  chatId: string;
+  text: string;
+  parseMode?: 'HTML' | 'Markdown';
+}): Promise<{
+  ok: boolean;
+  messageId: number | null;
+  chatId: string;
+  chatLabel: string;
+}> {
+  return postJson('/api/integrations', { action: 'telegram_send', ...params });
+}
+
 export async function fetchCloudWorkspace(
   presetId: string,
   signal?: AbortSignal,

@@ -6,14 +6,19 @@ import {
   Coins,
   Cpu,
   Download,
+  ExternalLink,
+  Eye,
+  EyeOff,
   Loader2,
   MessageSquare,
+  Search,
   Send,
   Trash2,
   Webhook,
   XCircle,
 } from 'lucide-react';
 import type { AiOpsLogEntry, WebhookConfig, WebhookSendResult } from '../types';
+import { detectTelegramChats, sendTelegramReport } from '../utils/apiClient';
 
 interface OpsViewProps {
   logs: AiOpsLogEntry[];
@@ -34,51 +39,103 @@ export const OpsView: React.FC<OpsViewProps> = ({
 }) => {
   const [telegramToken, setTelegramToken] = useState(() => localStorage.getItem('bizops_tg_token') || '');
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('bizops_tg_chat_id') || '');
+  const [showTgToken, setShowTgToken] = useState(false);
   const [sendingTelegram, setSendingTelegram] = useState(false);
-  const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
+  const [detectingTelegram, setDetectingTelegram] = useState(false);
+  const [detectedBotInfo, setDetectedBotInfo] = useState<{
+    botUsername: string;
+    botName: string;
+    botUrl: string;
+    chats: Array<{ id: string; label: string; type: string }>;
+  } | null>(null);
+  const [telegramStatus, setTelegramStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [testingWebhook, setTestingWebhook] = useState(false);
 
+  const handleDetectTelegramChat = async () => {
+    const cleanToken = telegramToken.trim().replace(/^bot/i, '').replace(/\s+/g, '');
+    if (!cleanToken) {
+      setTelegramStatus({ ok: false, text: 'Najpierw wklej Telegram Bot Token z @BotFather.' });
+      return;
+    }
+    setDetectingTelegram(true);
+    setTelegramStatus(null);
+    try {
+      localStorage.setItem('bizops_tg_token', cleanToken);
+      const res = await detectTelegramChats(cleanToken);
+      setDetectedBotInfo({
+        botUsername: res.botUsername,
+        botName: res.botName,
+        botUrl: res.botUrl,
+        chats: res.chats,
+      });
+      if (res.chats.length > 0) {
+        const preferred = res.chats.find((c) => c.type === 'private') || res.chats[0];
+        setTelegramChatId(preferred.id);
+        localStorage.setItem('bizops_tg_chat_id', preferred.id);
+        setTelegramStatus({
+          ok: true,
+          text: `Połączono z @${res.botUsername}! Wykryto i ustawiono Chat ID: ${preferred.id} (${preferred.label}).`,
+        });
+      } else {
+        setTelegramStatus({
+          ok: false,
+          text: res.botUrl
+            ? `Połączono z botem @${res.botUsername}! Otwórz ${res.botUrl} w Telegramie, kliknij START (/start) i kliknij ponownie „Wykryj moje Chat ID”.`
+            : 'Połączono z botem, ale nie wysłałeś mu jeszcze /start na Telegramie.',
+        });
+      }
+    } catch (err) {
+      setTelegramStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : 'Nie udało się połączyć z botem Telegram.',
+      });
+    } finally {
+      setDetectingTelegram(false);
+    }
+  };
+
   const handleSendTelegramReport = async () => {
-    if (!telegramToken.trim() || !telegramChatId.trim()) {
-      setTelegramStatus('Uzupełnij Token bota i Chat ID.');
+    const cleanToken = telegramToken.trim().replace(/^bot/i, '').replace(/\s+/g, '');
+    const cleanChatId = telegramChatId.trim().replace(/\s+/g, '');
+    if (!cleanToken || !cleanChatId) {
+      setTelegramStatus({ ok: false, text: 'Uzupełnij Token bota i Chat ID (albo kliknij Wykryj moje Chat ID).' });
       return;
     }
     setSendingTelegram(true);
     setTelegramStatus(null);
     try {
-      localStorage.setItem('bizops_tg_token', telegramToken.trim());
-      localStorage.setItem('bizops_tg_chat_id', telegramChatId.trim());
+      localStorage.setItem('bizops_tg_token', cleanToken);
+      localStorage.setItem('bizops_tg_chat_id', cleanChatId);
 
+      const errorCount = logs.filter((l) => l.status === 'error').length;
       const reportText = [
-        '📊 *RAPORT DZIENNY • BIZOPS AI STUDIO*',
+        '📊 <b>RAPORT DZIENNY • BIZOPS AI STUDIO</b>',
         `📅 Data: ${new Date().toLocaleDateString('pl-PL')} ${new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}`,
         '',
-        `⚡ *Wywołania AI ogółem:* ${logs.length}`,
-        `✅ *Zakończone sukcesem:* ${logs.filter((l) => l.status === 'success').length}`,
-        `⏱️ *Średni czas (latency):* ${avgLatency} ms`,
-        `🔢 *Zużyte tokeny:* ${totalTokens.toLocaleString('pl-PL')}`,
-        '💰 *Koszt API:* 0,00 zł (Darmowy limit Google)',
+        `⚡ <b>Wywołania AI ogółem:</b> ${logs.length}`,
+        `✅ <b>Zakończone sukcesem:</b> ${logs.filter((l) => l.status === 'success').length}${errorCount > 0 ? ` (błędy: ${errorCount})` : ''}`,
+        `⏱️ <b>Średni czas (latency):</b> ${avgLatency} ms`,
+        `🔢 <b>Zużyte tokeny:</b> ${totalTokens.toLocaleString('pl-PL')}`,
+        '💰 <b>Koszt API:</b> 0,00 zł (Darmowy limit Google)',
         '',
-        '🤖 _Raport wygenerowany automatycznie przez BizOps AI Studio_'
+        '🤖 <i>Raport wygenerowany automatycznie przez BizOps AI Studio</i>',
       ].join('\n');
 
-      const url = `https://api.telegram.org/bot${encodeURIComponent(telegramToken.trim())}/sendMessage`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: telegramChatId.trim(),
-          text: reportText,
-          parse_mode: 'Markdown',
-        }),
+      const res = await sendTelegramReport({
+        botToken: cleanToken,
+        chatId: cleanChatId,
+        text: reportText,
+        parseMode: 'HTML',
       });
-
-      if (!res.ok) {
-        throw new Error(`Błąd Telegram API: HTTP ${res.status}`);
-      }
-      setTelegramStatus('Wysłano raport na Telegram!');
+      setTelegramStatus({
+        ok: true,
+        text: `Wysłano raport na Telegram (${res.chatLabel || res.chatId})!`,
+      });
     } catch (err) {
-      setTelegramStatus(err instanceof Error ? err.message : 'Nie udało się wysłać raportu.');
+      setTelegramStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : 'Nie udało się wysłać raportu na Telegram.',
+      });
     } finally {
       setSendingTelegram(false);
     }
@@ -229,33 +286,97 @@ export const OpsView: React.FC<OpsViewProps> = ({
             <label className="block text-[11px] font-semibold text-slate-700 mb-1">
               Telegram Bot Token:
             </label>
-            <input
-              type="password"
-              value={telegramToken}
-              onChange={(e) => setTelegramToken(e.target.value)}
-              placeholder="np. 7123456789:AAH..."
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-800 outline-none focus:border-sky-500"
-            />
+            <div className="relative">
+              <input
+                type={showTgToken ? 'text' : 'password'}
+                value={telegramToken}
+                onChange={(e) => setTelegramToken(e.target.value)}
+                placeholder="np. 7123456789:AAH..."
+                className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-3 pr-9 text-xs font-mono text-slate-800 outline-none focus:border-sky-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowTgToken((v) => !v)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                title={showTgToken ? 'Ukryj token' : 'Pokaż token'}
+              >
+                {showTgToken ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
           </div>
           <div>
-            <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-              Chat ID (Twój ID lub grupy):
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-semibold text-slate-700">
+                Chat ID (Twój prywatny ID lub grupy):
+              </label>
+              <button
+                type="button"
+                disabled={detectingTelegram || !telegramToken.trim()}
+                onClick={() => void handleDetectTelegramChat()}
+                className="inline-flex items-center gap-1 rounded-md bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-800 hover:bg-sky-200 disabled:opacity-45"
+                title="Sprawdź połączenie z botem i automatycznie pobierz Twoje Chat ID z Telegrama"
+              >
+                {detectingTelegram ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                Wykryj moje Chat ID
+              </button>
+            </div>
             <input
               type="text"
               value={telegramChatId}
               onChange={(e) => setTelegramChatId(e.target.value)}
-              placeholder="np. -100123456789 lub 987654321"
+              placeholder="np. 8699950092 lub -100123456789"
               className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono text-slate-800 outline-none focus:border-sky-500"
             />
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 pt-1 border-t border-sky-100 text-xs">
-          <div>
-            {telegramStatus && (
-              <span className={`text-xs font-semibold ${telegramStatus.includes('Wysłano') ? 'text-emerald-700' : 'text-rose-600'}`}>
-                {telegramStatus}
+        {detectedBotInfo && (
+          <div className="rounded-xl border border-sky-200 bg-white/90 px-3 py-2 text-[11px] flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold text-slate-800">
+                Aktywny bot: @{detectedBotInfo.botUsername || detectedBotInfo.botName}
+              </span>
+              {detectedBotInfo.chats.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => {
+                    setTelegramChatId(c.id);
+                    localStorage.setItem('bizops_tg_chat_id', c.id);
+                  }}
+                  className={`rounded-lg px-2 py-0.5 text-[10px] font-bold border transition ${
+                    telegramChatId === c.id
+                      ? 'border-sky-500 bg-sky-50 text-sky-900'
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-sky-300'
+                  }`}
+                >
+                  {c.label} • {c.id}
+                </button>
+              ))}
+            </div>
+            {detectedBotInfo.botUrl && (
+              <a
+                href={detectedBotInfo.botUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-700 hover:underline"
+              >
+                Otwórz w Telegram (kliknij /start)
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-sky-100 text-xs">
+          <div className="flex-1 min-w-[220px]">
+            {telegramStatus ? (
+              <span className={`text-xs font-semibold ${telegramStatus.ok ? 'text-emerald-700' : 'text-rose-600'}`}>
+                {telegramStatus.text}
+              </span>
+            ) : (
+              <span className="text-[11px] text-slate-500">
+                Wskazówka: przy nowym bocie otwórz go raz w Telegramie i kliknij <strong>START</strong>, inaczej Telegram blokuje pierwszą wiadomość priv.
               </span>
             )}
           </div>

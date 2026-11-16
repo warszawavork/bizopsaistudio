@@ -676,6 +676,198 @@ export default async function handler(
       return;
     }
 
+    if (action === 'telegram_detect_chat') {
+      const cleanToken = String(body.botToken || body.token || '')
+        .trim()
+        .replace(/^bot/i, '')
+        .replace(/\s+/g, '');
+      if (!/^\d{5,16}:[A-Za-z0-9_-]{20,}$/.test(cleanToken)) {
+        sendJson(res, 400, {
+          error: 'Nieprawidłowy format Telegram Bot Token (oczekiwano np. 7123456789:AAH... z @BotFather).',
+        });
+        return;
+      }
+
+      const meRes = await fetch(`https://api.telegram.org/bot${cleanToken}/getMe`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      const meData = (await meRes.json()) as {
+        ok?: boolean;
+        description?: string;
+        result?: { id?: number; username?: string; first_name?: string };
+      };
+      if (!meRes.ok || !meData.ok || !meData.result) {
+        sendJson(res, meRes.status || 400, {
+          error:
+            meRes.status === 401
+              ? 'Nieprawidłowy Telegram Bot Token (Unauthorized) — sprawdź token w @BotFather.'
+              : `Błąd Telegram getMe: ${meData.description || `HTTP ${meRes.status}`}`,
+        });
+        return;
+      }
+
+      const botUsername = meData.result.username || '';
+      const botName = meData.result.first_name || 'Bot Telegram';
+
+      const updRes = await fetch(`https://api.telegram.org/bot${cleanToken}/getUpdates?limit=25`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      interface TelegramChatObj {
+        id?: number;
+        type?: string;
+        title?: string;
+        first_name?: string;
+        last_name?: string;
+        username?: string;
+      }
+      const updData = (await updRes.json()) as {
+        ok?: boolean;
+        description?: string;
+        result?: Array<{
+          message?: { chat?: TelegramChatObj };
+          edited_message?: { chat?: TelegramChatObj };
+          my_chat_member?: { chat?: TelegramChatObj };
+          channel_post?: { chat?: TelegramChatObj };
+        }>;
+      };
+
+      const chatsMap = new Map<string, { id: string; label: string; type: string }>();
+      if (updRes.ok && Array.isArray(updData.result)) {
+        for (const u of [...updData.result].reverse()) {
+          const chat =
+            u.message?.chat ||
+            u.edited_message?.chat ||
+            u.my_chat_member?.chat ||
+            u.channel_post?.chat;
+          if (!chat?.id) continue;
+          const idStr = String(chat.id);
+          if (chatsMap.has(idStr)) continue;
+          const name =
+            chat.title ||
+            [chat.first_name, chat.last_name].filter(Boolean).join(' ') ||
+            (chat.username ? `@${chat.username}` : `Czat ${idStr}`);
+          chatsMap.set(idStr, {
+            id: idStr,
+            label: `${name}${chat.username && !name.includes('@') ? ` (@${chat.username})` : ''}`,
+            type: chat.type || 'private',
+          });
+        }
+      }
+
+      sendJson(res, 200, {
+        ok: true,
+        botId: meData.result.id ? String(meData.result.id) : '',
+        botUsername,
+        botName,
+        botUrl: botUsername ? `https://t.me/${botUsername}` : '',
+        webhookConflict: updRes.status === 409,
+        chats: Array.from(chatsMap.values()),
+      });
+      return;
+    }
+
+    if (action === 'telegram_send') {
+      const cleanToken = String(body.botToken || body.token || '')
+        .trim()
+        .replace(/^bot/i, '')
+        .replace(/\s+/g, '');
+      const rawChatId = String(body.chatId || '').trim().replace(/\s+/g, '');
+      const text = String(body.text || '').trim();
+      const parseMode = body.parseMode === 'Markdown' ? 'Markdown' : body.parseMode === 'HTML' ? 'HTML' : undefined;
+
+      if (!/^\d{5,16}:[A-Za-z0-9_-]{20,}$/.test(cleanToken)) {
+        sendJson(res, 400, {
+          error: 'Nieprawidłowy Telegram Bot Token — wklej pełny token z @BotFather (np. 7123456789:AAH...).',
+        });
+        return;
+      }
+      if (!rawChatId || !text) {
+        sendJson(res, 400, { error: 'Podaj poprawne Chat ID oraz treść wiadomości na Telegram.' });
+        return;
+      }
+
+      const tgPost = async (mode?: string) => {
+        const tgRes = await fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: rawChatId,
+            text,
+            ...(mode ? { parse_mode: mode } : {}),
+            disable_web_page_preview: true,
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+        const tgJson = (await tgRes.json().catch(() => ({}))) as {
+          ok?: boolean;
+          description?: string;
+          error_code?: number;
+          result?: { message_id?: number; chat?: { id?: number; title?: string; username?: string; first_name?: string } };
+        };
+        return { tgRes, tgJson };
+      };
+
+      let { tgRes, tgJson } = await tgPost(parseMode);
+
+      // Jesli Telegram odrzucil formatowanie Markdown/HTML -> ponow jako czysty tekst!
+      if (!tgRes.ok && parseMode && /parse entities/i.test(String(tgJson.description || ''))) {
+        const plain = text.replace(/<[^>]+>/g, '');
+        const retryRes = await fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: rawChatId, text: plain, disable_web_page_preview: true }),
+          signal: AbortSignal.timeout(10000),
+        });
+        tgRes = retryRes;
+        tgJson = (await retryRes.json().catch(() => ({}))) as typeof tgJson;
+      }
+
+      if (!tgRes.ok || !tgJson.ok) {
+        const desc = String(tgJson.description || '');
+        const lower = desc.toLowerCase();
+        let friendly = `Telegram API (${tgRes.status}): ${desc || 'Nieznany błąd'}`;
+
+        if (lower.includes('unauthorized')) {
+          friendly = 'Nieprawidłowy Bot Token (Unauthorized). Sprawdź token skopiowany z @BotFather.';
+        } else if (lower.includes("can't send messages to bots")) {
+          friendly =
+            'W polu Chat ID wpisałeś ID samego bota zamiast swojego prywatnego Chat ID! Kliknij przycisk „Wykryj moje Chat ID” powyżej.';
+        } else if (
+          lower.includes('chat not found') ||
+          lower.includes('initiate conversation') ||
+          lower.includes('blocked by the user')
+        ) {
+          let botUrl = '';
+          try {
+            const meR = await fetch(`https://api.telegram.org/bot${cleanToken}/getMe`, {
+              signal: AbortSignal.timeout(4000),
+            });
+            const meJ = (await meR.json()) as { result?: { username?: string } };
+            if (meJ.result?.username) botUrl = `https://t.me/${meJ.result.username}`;
+          } catch {
+            // ignore
+          }
+          friendly = botUrl
+            ? `Telegram (${desc}): nowy bot nie może napisać pierwszy, dopóki nie otworzysz ${botUrl} i nie klikniesz START (/start). Kliknij link, wyślij /start i spróbuj ponownie!`
+            : `Telegram (${desc}): otwórz swojego nowego bota w Telegramie i kliknij START (/start), a potem sprawdź Chat ID przyciskiem „Wykryj moje Chat ID”.`;
+        }
+
+        sendJson(res, 400, { error: friendly, telegramDescription: desc });
+        return;
+      }
+
+      sendJson(res, 200, {
+        ok: true,
+        messageId: tgJson.result?.message_id || null,
+        chatId: String(tgJson.result?.chat?.id || rawChatId),
+        chatLabel:
+          tgJson.result?.chat?.title ||
+          tgJson.result?.chat?.first_name ||
+          (tgJson.result?.chat?.username ? `@${tgJson.result.chat.username}` : rawChatId),
+      });
+      return;
+    }
+
     sendJson(res, 400, { error: `Nieznana akcja integracji: ${action}` });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Błąd połączenia z zewnętrznym API.';
