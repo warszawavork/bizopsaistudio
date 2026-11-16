@@ -154,10 +154,18 @@ export function buildLangGraphWorkflow(apiKey: string) {
     })
     // Węzeł 2: Drafter Agent (Autor odpowiedzi)
     .addNode('drafter', async (state: WorkflowState) => {
-      const sysPrompt = 'Jesteś Doświadczonym Doradcą Handlowym. Na bazie planu i bazy wiedzy napisz profesjonalną, konkretną propozycję dla klienta.';
+      const sysPrompt = [
+        'Jesteś Doświadczonym Doradcą Handlowym. Na bazie planu i bazy wiedzy napisz profesjonalną, konkretną propozycję dla klienta.',
+        'FORMATOWANIE UKŁADU (OBOWIĄZKOWE): Podziel odpowiedź na czytelne sekcje oddzielone pustą linią. KAŻDY punktor „•” i KAŻDY punkt numerowany „1.”, „2.” ZAWSZE zaczynaj od NOWEJ LINII (nigdy w jednym ciągu tekstu!).',
+      ].join('\n');
       const feedback = state.critique ? `\nUWAGI KRYTYKA DO POPRAWY:\n${state.critique}` : '';
-      const prompt = `ZADANIE: ${state.task}\n\nPLAN ANIALITYKA:\n${state.plan}\n\nBAZA WIEDZY:\n${state.knowledgeContext}${feedback}`;
-      const draft = await callGeminiRaw(apiKey, prompt, sysPrompt);
+      const prompt = `ZADANIE: ${state.task}\n\nPLAN ANALITYKA:\n${state.plan}\n\nBAZA WIEDZY:\n${state.knowledgeContext}${feedback}`;
+      const rawDraft = await callGeminiRaw(apiKey, prompt, sysPrompt);
+      const draft = rawDraft
+        .replace(/([^\n])\s*•\s+/g, '$1\n• ')
+        .replace(/([.:!?])\s+(\d{1,2}\.\s+[A-ZŻŹĆĄŚĘŁÓŃa-z])/g, '$1\n\n$2')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 
       return {
         draft,

@@ -55,7 +55,7 @@ import {
   sendGmailBridge,
   sendWhatsAppMessage,
 } from '../utils/apiClient';
-import { copyRichEmailToClipboard } from '../utils/emailExport';
+import { copyRichEmailToClipboard, formatStructuredReplyText } from '../utils/emailExport';
 import { idbGetWorkspaceItem } from '../utils/offlineDb';
 import { exportSalesReplyToPdf, printCleanReportHtml } from '../utils/pdfExport';
 import { WebSourcesPanel } from './WebSourcesPanel';
@@ -336,7 +336,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   useEffect(() => {
     if (latestReply) {
       setEditableSubject(latestReply.subject);
-      setEditableBody(latestReply.replyBody);
+      setEditableBody(formatStructuredReplyText(latestReply.replyBody));
       setSavedGapToKb(false);
     }
   }, [latestReply]);
@@ -395,7 +395,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
       onReplyComplete(result);
       setEditableSubject(result.subject);
-      setEditableBody(result.replyBody);
+      setEditableBody(formatStructuredReplyText(result.replyBody));
 
       setReplyHistory((prev) => {
         const next: ReplyHistoryItem[] = [
@@ -1624,14 +1624,24 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
               {/* Editable Body */}
               <div>
-                <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Proponowana odpowiedź dla klienta
-                </label>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                    Proponowana odpowiedź dla klienta
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEditableBody((prev) => formatStructuredReplyText(prev))}
+                    className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-2 py-0.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100 transition"
+                    title="Rozdziel punktory i sekcje do czytelnego układu akapit po akapicie"
+                  >
+                    Uporządkuj punktację
+                  </button>
+                </div>
                 <textarea
-                  rows={13}
+                  rows={16}
                   value={editableBody}
                   onChange={(e) => setEditableBody(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:bg-white font-sans whitespace-pre-wrap"
                 />
               </div>
 

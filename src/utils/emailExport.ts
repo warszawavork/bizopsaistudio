@@ -242,3 +242,46 @@ export async function copyRichEmailToClipboard(input: RichEmailExportInput): Pro
   await navigator.clipboard.writeText(plainText);
   return 'plain';
 }
+
+/**
+ * Gwarantuje czytelny, profesjonalny układ wiadomości:
+ * każdy punktor (•), numerowany krok i sekcja trafiają od nowej linii (zero ściany tekstu).
+ */
+export function formatStructuredReplyText(raw: string): string {
+  if (!raw) return '';
+  let text = raw.replace(/\r\n/g, '\n').trim();
+
+  text = text.replace(/([^\n])\s*•\s+/g, '$1\n• ');
+  text = text.replace(/^[ \t]*•[ \t]*/gm, '• ');
+  text = text.replace(/([.:!?])\n(• )/g, '$1\n\n$2');
+  text = text.replace(/(• [^\n]+)\n{2,}(?=• )/g, '$1\n');
+
+  text = text.replace(/([.:!?])\s+(\d{1,2}\.\s+[A-ZŻŹĆĄŚĘŁÓŃa-z])/g, '$1\n\n$2');
+  for (let pass = 0; pass < 6; pass++) {
+    const next = text.replace(/((?:^|\n)\d{1,2}\.\s+[^\n]+?)\s+(\d{1,2}\.\s+[A-ZŻŹĆĄŚĘŁÓŃa-z])/g, '$1\n$2');
+    if (next === text) break;
+    text = next;
+  }
+
+  text = text.replace(
+    /^((?:Dzień dobry|Szanown[ya]\s+[^.!?\n]+|Witam[^.!?\n]*|Cześć[^.!?\n]*|Hello[^.!?\n]*|Dear\s+[^.!?\n]+)[,!.]?)\s+(?=[A-ZŻŹĆĄŚĘŁÓŃ])/,
+    '$1\n\n',
+  );
+
+  text = text.replace(
+    /([.!?])\s+((?:Zakres oferty|Szczegóły oferty|Specyfikacja techniczna|Standard wykończenia|Wycena orientacyjna|Koszty i podatek VAT|Podsumowanie kosztów|Kolejne kroki|Następne kroki|Aby przygotować|Podsumowując|W razie pytań|Zapraszam do kontaktu)[^:\n]*:)/gi,
+    '$1\n\n$2',
+  );
+
+  text = text.replace(
+    /\s+((?:Z poważaniem|Z wyrazami szacunku|Pozdrawiam|Serdecznie pozdrawiam|Łączę pozdrowienia|Best regards|Kind regards|Mit freundlichen Grüßen|Med vennlig hilsen),?)\s+/gi,
+    '\n\n$1\n',
+  );
+
+  return text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+$/g, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}

@@ -74,6 +74,81 @@ const BUILDING_TYPOLOGY_DETECTION = [
   '- Rozpoznaj wariant: (A) Dom całoroczny mieszkalny (PKOB 1110, wymóg WT2021; osoba fizyczna do 300 m² = potencjalnie 8% VAT; zgłoszenie do 70 m² na własne potrzeby lub pozwolenie), (B) Domek rekreacyjny / letniskowy (uproszczone wymogi, zgłoszenie rekreacji indywidualnej, uwaga na 23% VAT), lub (C) Obiekt B2B / Biuro / Wynajem komercyjny (zawsze 23% VAT + Split Payment MPP powyżej 15 000 zł brutto).',
 ].join('\n');
 
+const REPLY_STRUCTURE_COMMAND = [
+  'KOMENDA FORMATOWANIA UKŁADU ODPOWIEDZI (BEZWZGLĘDNY WYMÓG ESTETYKI — ZERO ŚCIANY TEKSTU):',
+  '1. KAŻDY element listy (• oraz 1., 2., 3.) MUSI zaczynać się od NOWEJ LINII (\\n). SUROWY ZAKAZ umieszczania dwóch punktorów „•” w tym samym akapicie lub po kropce w tej samej linii!',
+  '2. Używaj czytelnej, profesjonalnej struktury podzielonej pustą linią (\\n\\n) pomiędzy sekcjami:',
+  '   [Powitanie]',
+  '   (pusta linia)',
+  '   [Krótkie odniesienie do zapytania — max 2 zdania]',
+  '   (pusta linia)',
+  '   [Nagłówek sekcji, np. Szczegóły zakresu / Specyfikacja:]',
+  '   • Punkt 1: krótki konkret',
+  '   • Punkt 2: krótki konkret',
+  '   • Punkt 3: krótki konkret',
+  '   (pusta linia)',
+  '   [Sekcja Koszty / VAT / Warunki finansowe:]',
+  '   • Kwota i VAT: ...',
+  '   • Koszty dodatkowe: ...',
+  '   (pusta linia)',
+  '   [Kolejne kroki / Pytania:]',
+  '   1. Pierwsze pytanie lub krok',
+  '   2. Drugie pytanie lub krok',
+  '   (pusta linia)',
+  '   [Podpis]',
+  '3. Zachowaj czystość biznesową (bez surowych znaków ### ani | tabel w treści maila).',
+].join('\n');
+
+function formatStructuredReplyText(raw: string): string {
+  if (!raw) return '';
+  let text = raw.replace(/\r\n/g, '\n').trim();
+
+  // 1. Każdy śródliniowy punktor • przenieś do nowej linii
+  text = text.replace(/([^\n])\s*•\s+/g, '$1\n• ');
+  text = text.replace(/^[ \t]*•[ \t]*/gm, '• ');
+
+  // 2. Oddziel pustą linią przed blokiem punktorów, jeśli poprzedza go pełne zdanie lub nagłówek z dwukropkiem
+  text = text.replace(/([.:!?])\n(• )/g, '$1\n\n$2');
+  // Trzymaj sąsiednie punktory blisko siebie (jeden pod drugim)
+  text = text.replace(/(• [^\n]+)\n{2,}(?=• )/g, '$1\n');
+
+  // 3. Łam śródliniowe listy numerowane (np. "prosimy o: 1. Jaki... 2. Czy...")
+  text = text.replace(/([.:!?])\s+(\d{1,2}\.\s+[A-ZŻŹĆĄŚĘŁÓŃa-z])/g, '$1\n\n$2');
+  for (let pass = 0; pass < 6; pass++) {
+    const next = text.replace(/((?:^|\n)\d{1,2}\.\s+[^\n]+?)\s+(\d{1,2}\.\s+[A-ZŻŹĆĄŚĘŁÓŃa-z])/g, '$1\n$2');
+    if (next === text) break;
+    text = next;
+  }
+
+  // 4. Oddziel powitanie na początku wiadomości
+  text = text.replace(
+    /^((?:Dzień dobry|Szanown[ya]\s+[^.!?\n]+|Witam[^.!?\n]*|Cześć[^.!?\n]*|Hello[^.!?\n]*|Dear\s+[^.!?\n]+)[,!.]?)\s+(?=[A-ZŻŹĆĄŚĘŁÓŃ])/,
+    '$1\n\n'
+  );
+
+  // 5. Oddziel charakterystyczne nagłówki sekcji do nowego akapitu
+  text = text.replace(
+    /([.!?])\s+((?:Zakres oferty|Szczegóły oferty|Specyfikacja techniczna|Standard wykończenia|Wycena orientacyjna|Koszty i podatek VAT|Podsumowanie kosztów|Kolejne kroki|Następne kroki|Aby przygotować|Podsumowując|W razie pytań|Zapraszam do kontaktu)[^:\n]*:)/gi,
+    '$1\n\n$2'
+  );
+
+  // 6. Oddziel podpis końcowy
+  text = text.replace(
+    /\s+((?:Z poważaniem|Z wyrazami szacunku|Pozdrawiam|Serdecznie pozdrawiam|Łączę pozdrowienia|Best regards|Kind regards|Mit freundlichen Grüßen|Med vennlig hilsen),?)\s+/gi,
+    '\n\n$1\n'
+  );
+
+  // 7. Posprzątaj nadmiar spacji i pustych linii
+  text = text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+$/g, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return text;
+}
+
 function normalizeSearchText(text: string): string {
   return text
     .toLowerCase()
@@ -772,6 +847,9 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       });
 
       const parsed = parseGeminiJson<Record<string, unknown>>(result.text);
+      if (typeof parsed.replyBody === 'string') {
+        parsed.replyBody = formatStructuredReplyText(parsed.replyBody);
+      }
       sendJson(res, 200, {
         ...parsed,
         webSources: liveWeb.sources,
@@ -811,6 +889,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         'Przeanalizuj przesłany dokument (kosztorys, zapytanie klienta, faktura, notatka głosowa z terenu, specyfikacja) pod kątem zgodności z wewnętrzną Bazą Wiedzy Firmy.',
         'Zidentyfikuj wszystkie kluczowe parametry, wykryj braki formalne, błędy (np. błędna stawka VAT 8%/23%, brak MPP powyżej 15 000 zł, niekompletne wymogi techniczne/logistyczne, rozjazd budżetu) i wystaw ocenę kompletności score (0-100).',
         BUILDING_TYPOLOGY_DETECTION,
+        REPLY_STRUCTURE_COMMAND,
         'Wygeneruj gotowy szkic odpowiedzi e-mail do klienta/nadawcy oraz tagi do automatyzacji CRM/Make.',
         langInstruction,
         '',
@@ -896,6 +975,9 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       });
 
       const parsed = parseGeminiJson<Record<string, unknown>>(result.text);
+      if (typeof parsed.recommendedReplyBody === 'string') {
+        parsed.recommendedReplyBody = formatStructuredReplyText(parsed.recommendedReplyBody);
+      }
       sendJson(res, 200, {
         ...parsed,
         contextStats,
@@ -1083,8 +1165,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
 
       const channelInstruction =
         channel === 'sms'
-          ? 'FORMAT KANAŁU: Wiadomość WhatsApp / SMS — maksymalnie zwięzła (4–7 krótkich zdań lub krótkie wypunktowanie), bez długich wstępów, bez Markdownu i bez formalnej stopki.'
-          : 'FORMAT KANAŁU: Pełny profesjonalny e-mail biznesowy gotowy do wysłania. Pisz czystym tekstem biznesowym z estetycznymi punktorami „•” oraz wyraźnymi akapitami (UNIKAJ surowych znaczników Markdown typu `###` lub `|` w treści maila `replyBody`).';
+          ? 'FORMAT KANAŁU: Wiadomość WhatsApp / SMS — zwięzła, czytelna, podzielona na krótkie akapity lub wypunktowanie (KAŻDY punktor • od NOWEJ linii \\n!), bez długich wstępów i bez formalnej stopki.'
+          : 'FORMAT KANAŁU: Pełny profesjonalny e-mail biznesowy gotowy do wysłania. Stosuj przejrzysty podział na sekcje z pustą linią (\\n\\n) i punktory „•” ZAWSZE każdy w NOWEJ LINII (\\n• ).';
 
       const signatureLines =
         advisorSignature?.enabled && channel === 'email'
@@ -1110,6 +1192,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         replyLangInstruction,
         NEGATIVE_CONSTRAINTS_CLIENT,
         BUILDING_TYPOLOGY_DETECTION,
+        REPLY_STRUCTURE_COMMAND,
         signatureLines
           ? `PODPIS DORADCY: Zakończ treść maila (replyBody) dokładnie poniższym podpisem:\n${signatureLines}`
           : '',
@@ -1202,6 +1285,9 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       });
 
       const parsed = parseGeminiJson<Record<string, unknown>>(result.text);
+      if (typeof parsed.replyBody === 'string') {
+        parsed.replyBody = formatStructuredReplyText(parsed.replyBody);
+      }
       sendJson(res, 200, {
         ...parsed,
         webSources: liveWeb.sources,
