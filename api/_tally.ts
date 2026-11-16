@@ -132,7 +132,7 @@ function extractRatesFromVars(vars: Map<string, number>): TallyLiveRates {
   };
 
   return {
-    dewLetn: num(['deweloperski'], 2500),
+    dewLetn: vars.get('priceDEWELOPERSKI') ?? num(['pricedeweloperski'], 2500),
     dewCal: num(['deweloperski', 'caloroczny'], 2650),
     norvLetn: vars.get('priceNORVIL') ?? 3000,
     norvCal: num(['norvil', 'caloroczny'], 3150),
@@ -140,9 +140,9 @@ function extractRatesFromVars(vars: Map<string, number>): TallyLiveRates {
     arch70: num(['architekt', '70m2'], 16000),
     arch120: num(['architekt', '70-120'], 17000),
     archPrem: num(['architekt', 'premium'], 20000),
-    fundSlupy: num(['slup'], 350),
-    fundLawy: num(['law'], 600),
-    fundPlyta: num(['plyt'], 750),
+    fundSlupy: num(['cena', 'slup'], 350),
+    fundLawy: num(['cena', 'law'], 600),
+    fundPlyta: num(['cena', 'plyt'], 750),
     tarasZad: num(['taras', 'zadasony'], 1500),
     tarasOtw: num(['taras', 'otwarty'], 1000),
     podlogowka: num(['podlog'], 187),
@@ -154,7 +154,7 @@ function extractRatesFromVars(vars: Map<string, number>): TallyLiveRates {
     samaKuchnia: num(['sama kuchnia'], 15000),
     kuchniaPlus: num(['kuchnia plus'], 23000),
     kominek: num(['kominek plus'], 9500),
-    podKominek: num(['kominek'], 3300),
+    podKominek: num(['gotowanie', 'kominek'], 3300),
     dostawaKm: num(['dostawa'], 25),
     roofAngleMpzp: 300,
     poddaszeMult: 1.5,
@@ -357,23 +357,34 @@ export function evaluateTallyQuoteFromLiveData(
 ): TallyQuoteEvaluation {
   const r = live.rates;
 
-  const floorType: 'parter' | 'poddasze' | 'pietro' | null =
+  const rawFloorType: 'parter' | 'poddasze' | 'pietro' | null =
     rawInput.floorType === 'parter' || rawInput.floorType === 'poddasze' || rawInput.floorType === 'pietro'
       ? rawInput.floorType
       : null;
 
+  const floorEstimated = Boolean(rawInput.floorEstimatedByBot) || !rawFloorType;
+  const effectiveFloorType: 'parter' | 'poddasze' | 'pietro' = rawFloorType || 'parter';
   const floorMult =
-    floorType === 'poddasze' ? r.poddaszeMult : floorType === 'pietro' ? r.pietroMult : 1.0;
+    effectiveFloorType === 'poddasze'
+      ? r.poddaszeMult
+      : effectiveFloorType === 'pietro'
+        ? r.pietroMult
+        : 1.0;
 
-  let footprintM2: number | null =
+  const explicitArea =
     typeof rawInput.areaM2 === 'number' && Number.isFinite(rawInput.areaM2) && rawInput.areaM2 > 0
       ? Math.round(rawInput.areaM2)
       : null;
 
-  if (footprintM2 && rawInput.areaIsTotalUsable && floorMult > 1) {
-    footprintM2 = Math.max(15, Math.round(footprintM2 / floorMult));
+  const areaEstimated = !explicitArea || Boolean(rawInput.areaEstimatedByBot);
+  // Jeśli klient nie podał metrażu (np. opisał tylko układ pokoi góra/dół), przyjmujemy orientacyjnie 50 m² dla piętrowego/poddasza lub 35 m² dla parteru
+  let footprintM2: number = explicitArea ?? (floorMult > 1 ? 50 : 35);
+
+  if (explicitArea && rawInput.areaIsTotalUsable && floorMult > 1) {
+    footprintM2 = Math.max(15, Math.round(explicitArea / floorMult));
   }
 
+  const quantity = Math.max(1, Math.min(20, Math.round(Number(rawInput.quantity) || 1)));
   const standard = rawInput.standard ?? null;
   const insulation = rawInput.insulation ?? null;
   const effectiveStd = standard || 'norvil';
@@ -397,31 +408,32 @@ export function evaluateTallyQuoteFromLiveData(
   const breakdown: TallyQuoteBreakdownItem[] = [];
   const missingQuestions: string[] = [];
 
-  if (footprintM2) {
-    const baseHouseNet = Math.round(footprintM2 * rateM2 * floorMult);
-    const stdLabel =
-      effectiveStd === 'deweloperski' ? 'Standard Deweloperski' : 'Standard NORVIL (Pod klucz)';
-    const insLabel = effectiveIns === 'caloroczny' ? 'Całoroczny' : 'Letniskowy';
-    const floorLabel =
-      floorType === 'poddasze'
-        ? `z poddaszem użytkowym (×${floorMult})`
-        : floorType === 'pietro'
-          ? `piętrowy pełnowymiarowy (×${floorMult})`
-          : 'parterowy (×1.0)';
-    const totalAreaLabel =
-      floorMult > 1 ? ` ≈ ${Math.round(footprintM2 * floorMult)} m² pow. całk.` : '';
+  const baseHouseNet = Math.round(footprintM2 * rateM2 * floorMult);
+  const stdLabel =
+    effectiveStd === 'deweloperski' ? 'Standard Deweloperski' : 'Standard NORVIL (Pod klucz)';
+  const insLabel = effectiveIns === 'caloroczny' ? 'Całoroczny' : 'Letniskowy';
+  const floorLabel =
+    effectiveFloorType === 'poddasze'
+      ? `z poddaszem użytkowym (×${floorMult})`
+      : effectiveFloorType === 'pietro'
+        ? `piętrowy pełnowymiarowy (×${floorMult})`
+        : 'parterowy (×1.0)';
+  const totalAreaLabel =
+    floorMult > 1 ? ` ≈ ${Math.round(footprintM2 * floorMult)} m² pow. całk.` : '';
 
-    breakdown.push({
-      key: 'base_house',
-      label: `Dom ${stdLabel} ${insLabel}, ${floorLabel}`,
-      formula: `${footprintM2} m² podstawy${totalAreaLabel} × ${floorMult} × ${formatPln(rateM2)}/m²`,
-      netPln: baseHouseNet,
-      isDefaultAssumed: !standard || !insulation || !floorType,
-    });
-  } else {
-    missingQuestions.push('Powierzchnia zabudowy domu (np. 35, 50, 70 m² — podstawa parteru)');
+  breakdown.push({
+    key: 'base_house',
+    label: `Dom ${stdLabel} ${insLabel}, ${floorLabel}`,
+    formula: `${areaEstimated ? 'przykładowo ' : ''}${footprintM2} m² podstawy${totalAreaLabel} × ${floorMult} × ${formatPln(rateM2)}/m²`,
+    netPln: baseHouseNet,
+    isDefaultAssumed: areaEstimated || !standard || !insulation || floorEstimated,
+  });
+
+  if (areaEstimated) {
+    missingQuestions.push(
+      `Docelowa powierzchnia zabudowy (m²) — do przykładu przyjęto ${footprintM2} m² po podłodze${floorMult > 1 ? ` (${Math.round(footprintM2 * floorMult)} m² po uwzględnieniu góry)` : ''}`
+    );
   }
-
   if (!standard) {
     missingQuestions.push(
       `Standard wykończenia: Deweloperski (${formatPln(effectiveIns === 'caloroczny' ? r.dewCal : r.dewLetn)}/m²) czy NORVIL Pod klucz (${formatPln(effectiveIns === 'caloroczny' ? r.norvCal : r.norvLetn)}/m²)`
@@ -430,13 +442,17 @@ export function evaluateTallyQuoteFromLiveData(
   if (!insulation) {
     missingQuestions.push('Przeznaczenie i izolacja: Dom całoroczny mieszkalny (WT2021) czy letniskowy / rekreacyjny');
   }
-  if (!floorType) {
-    missingQuestions.push('Typ kondygnacji: Parterowy (×1.0), Poddasze użytkowe (×1.5) czy Piętrowy pełnowymiarowy (×2.0)');
+  if (floorEstimated) {
+    missingQuestions.push(
+      rawFloorType
+        ? 'Rodzaj góry: Poddasze użytkowe ze skosami (×1.5) czy Pełne piętro (×2.0)'
+        : 'Typ kondygnacji: Parterowy (×1.0), Poddasze użytkowe (×1.5) czy Piętrowy pełnowymiarowy (×2.0)'
+    );
   }
 
   // Fundamenty
   const foundation = rawInput.foundation ?? null;
-  if (foundation && foundation !== 'brak' && footprintM2) {
+  if (foundation && foundation !== 'brak') {
     const fRate =
       foundation === 'slupy' ? r.fundSlupy : foundation === 'lawy' ? r.fundLawy : r.fundPlyta;
     const fLabel =
@@ -448,8 +464,9 @@ export function evaluateTallyQuoteFromLiveData(
     breakdown.push({
       key: 'foundation',
       label: fLabel,
-      formula: `${footprintM2} m² × ${formatPln(fRate)}/m²`,
+      formula: `${areaEstimated ? 'przykładowo ' : ''}${footprintM2} m² × ${formatPln(fRate)}/m²`,
       netPln: Math.round(footprintM2 * fRate),
+      isDefaultAssumed: areaEstimated,
     });
   } else if (foundation === 'brak') {
     breakdown.push({
@@ -633,18 +650,32 @@ export function evaluateTallyQuoteFromLiveData(
     );
   }
 
-  const totalNetPln = breakdown.reduce((sum, item) => sum + item.netPln, 0);
+  const perUnitNetPln = breakdown.reduce((sum, item) => sum + item.netPln, 0);
+  const totalNetPln = perUnitNetPln * quantity;
   const vatPln = Math.round((totalNetPln * vatRate) / 100);
   const totalGrossPln = totalNetPln + vatPln;
   const altVatGross8Pln = Math.round(totalNetPln * 1.08);
   const altVatGross23Pln = Math.round(totalNetPln * 1.23);
 
+  const isIllustrativeEstimate = areaEstimated || floorEstimated || !standard || !insulation || foundation === null;
+  const assumptions: string[] = [];
+  if (areaEstimated) assumptions.push(`przykładowa podstawa ${footprintM2} m²`);
+  if (floorEstimated) assumptions.push(`${effectiveFloorType} (×${floorMult})`);
+  if (!standard) assumptions.push(`Standard ${effectiveStd === 'deweloperski' ? 'Deweloperski' : 'NORVIL'}`);
+  if (quantity > 1) assumptions.push(`ilość: ${quantity} domki`);
+  const assumedSummary = isIllustrativeEstimate
+    ? `Kalkulacja przykładowa i pomocnicza (niepotwierdzona przez klienta) — założenia tymczasowe: ${assumptions.join(', ')}.`
+    : 'Kalkulacja oparta bezpośrednio na parametrach wskazanych przez klienta.';
+
   const normalizedInput: TallyQuoteInput = {
     areaM2: footprintM2,
     areaIsTotalUsable: rawInput.areaIsTotalUsable,
+    areaEstimatedByBot: areaEstimated,
+    floorEstimatedByBot: floorEstimated,
+    quantity,
     standard,
     insulation,
-    floorType,
+    floorType: rawFloorType,
     foundation,
     architectPkg: arch,
     underfloorHeating: rawInput.underfloorHeating ?? null,
@@ -663,10 +694,16 @@ export function evaluateTallyQuoteFromLiveData(
 
   const formattedQuoteBlock = [
     `KOSZTORYS WYLICZONY PRZEZ SILNIK TALLY (${live.formId}: "${live.formName}"):`,
+    ...(isIllustrativeEstimate ? [`⚠️ ${assumedSummary}`] : []),
     ...breakdown.map(
       (b) => `• ${b.label}: ${formatPln(b.netPln)} netto (${b.formula})`
     ),
-    `• RAZEM NETTO: ${formatPln(totalNetPln)}`,
+    ...(quantity > 1
+      ? [
+          `• Suma za 1 domek NETTO: ${formatPln(perUnitNetPln)}`,
+          `• RAZEM ZA ${quantity} DOMKI NETTO: ${formatPln(totalNetPln)}`,
+        ]
+      : [`• RAZEM NETTO: ${formatPln(totalNetPln)}`]),
     `• Podatek VAT (${vatRate}%): ${formatPln(vatPln)}`,
     `• RAZEM BRUTTO (${vatRate}% VAT): ${formatPln(totalGrossPln)} (dla porównania: z 8% VAT = ${formatPln(altVatGross8Pln)}, z 23% VAT = ${formatPln(altVatGross23Pln)})`,
   ].join('\n');
@@ -679,11 +716,15 @@ export function evaluateTallyQuoteFromLiveData(
     input: normalizedInput,
     breakdown,
     totalNetPln,
+    perUnitNetPln,
+    quantity,
     vatRate,
     vatPln,
     totalGrossPln,
     altVatGross8Pln,
     altVatGross23Pln,
+    isIllustrativeEstimate,
+    assumedSummary,
     missingQuestions,
     formattedQuoteBlock,
   };

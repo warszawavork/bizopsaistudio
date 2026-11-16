@@ -37,6 +37,9 @@ export interface AdvisorSignature {
 export interface TallyQuoteInput {
   areaM2: number | null;
   areaIsTotalUsable?: boolean;
+  areaEstimatedByBot?: boolean;
+  floorEstimatedByBot?: boolean;
+  quantity?: number;
   standard: 'deweloperski' | 'norvil' | null;
   insulation: 'letniskowy' | 'caloroczny' | null;
   floorType: 'parter' | 'poddasze' | 'pietro' | null;
@@ -72,11 +75,15 @@ export interface TallyQuoteEvaluation {
   input: TallyQuoteInput;
   breakdown: TallyQuoteBreakdownItem[];
   totalNetPln: number;
+  perUnitNetPln: number;
+  quantity: number;
   vatRate: 8 | 23;
   vatPln: number;
   totalGrossPln: number;
   altVatGross8Pln: number;
   altVatGross23Pln: number;
+  isIllustrativeEstimate: boolean;
+  assumedSummary: string;
   missingQuestions: string[];
   formattedQuoteBlock: string;
 }

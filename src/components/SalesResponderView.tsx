@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   BookOpen,
   Calculator,
   Check,
@@ -977,28 +978,44 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     setChannelStatus('Usunięto wybraną wiadomość z kontekstu tego czatu.');
   };
 
-  const rebuildFormattedBlock = (q: TallyQuoteEvaluation, nextBreakdown = q.breakdown, nextVatRate = q.vatRate): TallyQuoteEvaluation => {
-    const totalNetPln = nextBreakdown.reduce((s, b) => s + b.netPln, 0);
+  const rebuildFormattedBlock = (
+    q: TallyQuoteEvaluation,
+    nextBreakdown = q.breakdown,
+    nextVatRate = q.vatRate,
+    nextIllustrative = q.isIllustrativeEstimate
+  ): TallyQuoteEvaluation => {
+    const qty = Math.max(1, q.quantity || 1);
+    const perUnitNetPln = nextBreakdown.reduce((s, b) => s + b.netPln, 0);
+    const totalNetPln = perUnitNetPln * qty;
     const vatPln = Math.round((totalNetPln * nextVatRate) / 100);
     const totalGrossPln = totalNetPln + vatPln;
     const altVatGross8Pln = Math.round(totalNetPln * 1.08);
     const altVatGross23Pln = Math.round(totalNetPln * 1.23);
     const formattedQuoteBlock = [
       `KOSZTORYS WYLICZONY PRZEZ SILNIK TALLY (${q.formId}: "${q.formName}"):`,
+      ...(nextIllustrative && q.assumedSummary ? [`⚠️ ${q.assumedSummary}`] : []),
       ...nextBreakdown.map((b) => `• ${b.label}: ${b.netPln.toLocaleString('pl-PL')} zł netto (${b.formula})`),
-      `• RAZEM NETTO: ${totalNetPln.toLocaleString('pl-PL')} zł`,
+      ...(qty > 1
+        ? [
+            `• Razem za 1 domek NETTO: ${perUnitNetPln.toLocaleString('pl-PL')} zł`,
+            `• RAZEM ZA ${qty} DOMKI NETTO: ${totalNetPln.toLocaleString('pl-PL')} zł`,
+          ]
+        : [`• RAZEM NETTO: ${totalNetPln.toLocaleString('pl-PL')} zł`]),
       `• Podatek VAT (${nextVatRate}%): ${vatPln.toLocaleString('pl-PL')} zł`,
       `• RAZEM BRUTTO (${nextVatRate}% VAT): ${totalGrossPln.toLocaleString('pl-PL')} zł`,
     ].join('\n');
     return {
       ...q,
       breakdown: nextBreakdown,
+      perUnitNetPln,
+      quantity: qty,
       totalNetPln,
       vatRate: nextVatRate,
       vatPln,
       totalGrossPln,
       altVatGross8Pln,
       altVatGross23Pln,
+      isIllustrativeEstimate: nextIllustrative,
       formattedQuoteBlock,
     };
   };
@@ -1078,6 +1095,21 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const handleSwitchIntegratedVat = (rate: 8 | 23) => {
     if (!integratedTallyQuote) return;
     const updated = rebuildFormattedBlock(integratedTallyQuote, integratedTallyQuote.breakdown, rate);
+    setIntegratedTallyQuote(updated);
+    if (replyOutputMode !== 'reply_only') {
+      applyReplyOutputMode(replyOutputMode, updated);
+    }
+  };
+
+  const handleToggleIllustrativeNotice = () => {
+    if (!integratedTallyQuote) return;
+    const nextFlag = !integratedTallyQuote.isIllustrativeEstimate;
+    const updated = rebuildFormattedBlock(
+      integratedTallyQuote,
+      integratedTallyQuote.breakdown,
+      integratedTallyQuote.vatRate,
+      nextFlag
+    );
     setIntegratedTallyQuote(updated);
     if (replyOutputMode !== 'reply_only') {
       applyReplyOutputMode(replyOutputMode, updated);
@@ -2392,6 +2424,11 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     </span>
                     {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 ? (
                       <span className="text-xs font-extrabold text-slate-900">
+                        {integratedTallyQuote.quantity > 1 && (
+                          <span className="mr-1.5 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-extrabold text-indigo-800">
+                            × {integratedTallyQuote.quantity} domki
+                          </span>
+                        )}
                         {integratedTallyQuote.totalNetPln.toLocaleString('pl-PL')} zł netto
                         <span className="mx-1 font-normal text-slate-400">•</span>
                         <span className="text-emerald-800">
@@ -2408,6 +2445,21 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                   <div className="flex flex-wrap items-center gap-1.5">
                     {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 && (
                       <>
+                        <button
+                          type="button"
+                          onClick={handleToggleIllustrativeNotice}
+                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold transition ${
+                            integratedTallyQuote.isIllustrativeEstimate
+                              ? 'bg-amber-500 text-slate-950 shadow-2xs ring-1 ring-amber-600/30'
+                              : 'border border-amber-300 bg-white text-amber-800 hover:bg-amber-50'
+                          }`}
+                          title="Dodaje lub usuwa wyraźną adnotację dla klienta, że wycena ma charakter przykładowy i pomocniczy (niepotwierdzona przez klienta)"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          {integratedTallyQuote.isIllustrativeEstimate
+                            ? 'Kalkulacja przykładowa (pomoc dla klienta): WŁ'
+                            : 'Oznacz jako przykładową'}
+                        </button>
                         {([8, 23] as const).map((rate) => (
                           <button
                             key={rate}
@@ -2482,6 +2534,13 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {integratedTallyQuote && integratedTallyQuote.isIllustrativeEstimate && (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[10px] font-semibold text-amber-950 flex items-start gap-1.5">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600 mt-0.5" />
+                    <span>{integratedTallyQuote.assumedSummary}</span>
                   </div>
                 )}
 

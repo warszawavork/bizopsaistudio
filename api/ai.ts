@@ -711,18 +711,26 @@ function quickRegexExtractTallyParams(text: string): Partial<TallyQuoteInput> {
   const lower = text.toLowerCase();
   const areaMatch = lower.match(/(\d{2,3})\s*(?:m2|m²|metr)/);
   const kmMatch = lower.match(/(\d{2,4})\s*km\b/);
+  const qtyMatch = lower.match(/(\d+)\s*(?:domk|domy|domów|domow|szt)/);
+  const hasUpstairs = /góra|gora|piętr|pietr|poddasz/.test(lower);
+  const explicitFloor = /piętrow|pietrow|pełne piętro|pelne pietro/.test(lower)
+    ? ('pietro' as const)
+    : /poddasz/.test(lower)
+      ? ('poddasze' as const)
+      : /parter/.test(lower)
+        ? ('parter' as const)
+        : null;
+  const isPrepFireplace = /miejsce na koz|pod koz|przygotow.*komink|rury spalin/.test(lower);
+
   return {
-    areaM2: areaMatch ? Number(areaMatch[1]) : null,
+    areaM2: areaMatch ? Number(areaMatch[1]) : hasUpstairs ? 50 : 35,
+    areaEstimatedByBot: !areaMatch,
     areaIsTotalUsable: /użytkow|uzytkow|całkowit|calkowit/.test(lower),
+    floorType: explicitFloor || (hasUpstairs ? 'poddasze' : null),
+    floorEstimatedByBot: !explicitFloor,
+    quantity: qtyMatch ? Math.max(1, Number(qtyMatch[1])) : 1,
     standard: /dewelopersk/.test(lower) ? 'deweloperski' : /norvil|pod klucz/.test(lower) ? 'norvil' : null,
     insulation: /letnisk|rekreac/.test(lower) ? 'letniskowy' : /całorocz|calorocz|mieszkaln/.test(lower) ? 'caloroczny' : null,
-    floorType: /piętrow|pietrow|pełne piętro|pelne pietro/.test(lower)
-      ? 'pietro'
-      : /poddasz/.test(lower)
-        ? 'poddasze'
-        : /parter/.test(lower)
-          ? 'parter'
-          : null,
     foundation: /płyt|plyt/.test(lower)
       ? 'plyta'
       : /ław|law/.test(lower)
@@ -732,17 +740,18 @@ function quickRegexExtractTallyParams(text: string): Partial<TallyQuoteInput> {
           : /bez fundament/.test(lower)
             ? 'brak'
             : null,
-    underfloorHeating: /podłogówk|podlogowk|ogrzewanie podłogowe/.test(lower) ? true : null,
+    underfloorHeating: /podłogówk|podlogowk|ogrzewanie podłogowe|maty elektryczne/.test(lower) ? true : null,
+    acCount: /klimat/.test(lower) ? (/góra.*dół|gora.*dol|2\s*szt|dwa\s*klim/i.test(lower) ? 2 : 1) : 0,
     bathroom: /łazienk.*premium|lazienk.*premium/.test(lower)
       ? 'premium'
       : /łazienk|lazienk/.test(lower)
         ? 'podstawowy'
         : null,
-    fireplace: /kominek|koza/.test(lower) ? 'koza' : null,
+    fireplace: isPrepFireplace ? 'przygotowanie' : /kominek|koza/.test(lower) ? 'koza' : null,
     kitchenPkg: /kuchni/.test(lower) && /mebl/.test(lower) ? 'kuchnia_meble' : /kuchni/.test(lower) ? 'kuchnia' : null,
     roofAngleMpzp: /mpzp|kąt dachu|kat dachu/.test(lower) ? true : null,
     deliveryKm: kmMatch ? Number(kmMatch[1]) : 0,
-    vatRate: /23%/.test(lower) || /letnisk|firma|b2b/.test(lower) ? 23 : 8,
+    vatRate: /23%|letnisk|firma|b2b|wynajem|wynajm|inwestyc/.test(lower) ? 23 : 8,
   };
 }
 
@@ -765,10 +774,16 @@ async function extractTallyParamsFromConversation(
     .join('\n\n');
 
   const prompt = [
-    'Przeanalizuj poniższą rozmowę z klientem i wyciągnij wszystkie dotychczasowe ustalenia pasujące do konfiguratora domu NORVIL (Tally dWO4Oq).',
-    'Jeśli klient czegoś NIE określił ani nie potwierdził w żadnej wiadomości, ustaw "unknown" (lub 0 dla liczb) — NIE ZGADUJ!',
-    'UWAGA na metraż (areaM2): jeśli klient pisze np. „dom piętrowy 100m2 pow. użytkowej” ustaw areaIsTotalUsable=true; jeśli podaje powierzchnię zabudowy podstawy np. „podstawa 50m2 piętrowy” lub „parter 50m2”, ustaw areaIsTotalUsable=false.',
-    'Jeśli podano miasto dostawy (np. Warszawa -> 600 km z Przemyśla, Kraków -> 240 km, Wrocław -> 510 km, Gdańsk -> 820 km, Katowice -> 320 km), wpisz przybliżoną odległość w km z Przemyśla w deliveryKm.',
+    'Przeanalizuj poniższą rozmowę z klientem i wyciągnij parametry do konfiguratora domu NORVIL (Tally dWO4Oq).',
+    'ZASADY KRYTYCZNE:',
+    '1. Liczba domków (quantity): jeśli klient pisze np. „2 domki całoroczne”, ustaw quantity=2 (domyślnie 1).',
+    '2. Metraż (areaM2 + areaEstimatedByBot): jeśli klient podał metraż w m² -> wpisz go i ustaw areaEstimatedByBot=false. Jeśli NIE podał liczby m², ale opisał układ pokoi (np. dół salon+kuchnia+sypialnia+łazienka+pom. techniczne, góra 2 sypialnie+łazienka), oszacuj realistyczną powierzchnię zabudowy podstawy dla takiego układu (np. 50 lub 70 m² dla 3 sypialni z piętrem, 35 m² dla małego domku) i USTAW areaEstimatedByBot=true!',
+    '3. Kondygnacja (floorType + floorEstimatedByBot): jeśli klient pisze tylko „góra 2 sypialnie” bez wskazania skosów/poddasza vs pełnego piętra -> ustaw floorType="poddasze" i floorEstimatedByBot=true. Jeśli jawnie napisał „parter” / „poddasze” / „piętrowy”, ustaw floorEstimatedByBot=false.',
+    '4. Kominek: „miejsce na kozę / rury spalinowe / przygotowanie” = "przygotowanie" (NIE "koza"!). Pełny kominek z montażem = "koza".',
+    '5. Klimatyzacja (acCount): „klimatyzator góra dół” = 2 szt.',
+    '6. Ogrzewanie podłogowe: „maty elektryczne podłogowe” lub „ogrzewanie podłogowe” -> underfloorHeating="tak".',
+    '7. VAT: „na wynajem / B2B / firmę / letniskowy” -> vatRate=23. Budynek mieszkalny całoroczny prywatnie do 300 m² -> vatRate=8.',
+    '8. Jeśli czegoś zupełnie nie podano -> "unknown" (lub 0 dla liczb).',
     '',
     transcript,
   ].join('\n');
@@ -786,6 +801,9 @@ async function extractTallyParamsFromConversation(
             properties: {
               areaM2: { type: 'NUMBER' },
               areaIsTotalUsable: { type: 'BOOLEAN' },
+              areaEstimatedByBot: { type: 'BOOLEAN' },
+              floorEstimatedByBot: { type: 'BOOLEAN' },
+              quantity: { type: 'INTEGER' },
               standard: { type: 'STRING', enum: ['unknown', 'deweloperski', 'norvil'] },
               insulation: { type: 'STRING', enum: ['unknown', 'letniskowy', 'caloroczny'] },
               floorType: { type: 'STRING', enum: ['unknown', 'parter', 'poddasze', 'pietro'] },
@@ -821,6 +839,9 @@ async function extractTallyParamsFromConversation(
     const input: Partial<TallyQuoteInput> = {
       areaM2: typeof raw.areaM2 === 'number' && raw.areaM2 > 0 ? raw.areaM2 : null,
       areaIsTotalUsable: Boolean(raw.areaIsTotalUsable),
+      areaEstimatedByBot: Boolean(raw.areaEstimatedByBot),
+      floorEstimatedByBot: Boolean(raw.floorEstimatedByBot),
+      quantity: typeof raw.quantity === 'number' && raw.quantity >= 1 ? Math.round(raw.quantity) : 1,
       standard: opt<'deweloperski' | 'norvil'>(raw.standard),
       insulation: opt<'letniskowy' | 'caloroczny'>(raw.insulation),
       floorType: opt<'parter' | 'poddasze' | 'pietro'>(raw.floorType),
@@ -1414,11 +1435,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         includeMiniQuote
           ? activeTallyQuote && activeTallyQuote.breakdown.length > 0
             ? [
-                'ROZDZIAŁ ODPOWIEDZI OD KOSZTORYSU TALLY (WAŻNE DLA CZYSTOŚCI MODUŁÓW):',
-                'System wyliczył już osobno precyzyjny Kosztorys Tally (dWO4Oq), który handlowiec w aplikacji może jednym kliknięciem wysłać jako „Tylko sam kosztorys” albo kliknąć „Połącz kosztorys i odpowiedź”.',
-                'Dlatego w `replyBody` napisz elegancką, merytoryczną odpowiedź doradczą na pytania klienta (technologia, terminy, logistyka, kolejny krok) i krótko wspomnij o przygotowanym zestawieniu kosztów, ALE NIE wypisuj ręcznie w `replyBody` listy kwot ani sum netto/brutto — system wklei je dokładnie i bez duplikatów.',
+                'ROZDZIAŁ ODPOWIEDZI OD KOSZTORYSU TALLY ORAZ PROCEDURA PYTAŃ Z KAFELKÓW:',
+                '1. Odpowiedz najpierw konkretnie i ekspercko na wszystkie pytania klienta na podstawie KAFELKÓW BAZY WIEDZY FIRMY (konstrukcja, ocieplenie ścian/sufitu, płyta fundamentowa, czas realizacji, harmonogram płatności, VAT 23% przy najmie, porównanie powierzchni po podłodze vs użytkowej).',
+                '2. Następnie utwórz wyraźną sekcję w punktach (każdy punktor od NOWEJ linii): „Aby przygotować dla Państwa wiążącą, dokładną wycenę, prosimy o odpowiedź na poniższe pytania:” — wypisz brakujące pytania z Bazy Wiedzy (kafelków) oraz poniższej listy z Tally.',
+                '3. NIE wypisuj ręcznie w `replyBody` pełnej tabeli cen ani sum netto/brutto — system automatycznie dopina wyliczony przez Tally kosztorys (lub handlowiec przełącza go przyciskiem).',
+                activeTallyQuote.isIllustrativeEstimate
+                  ? `4. W jednym zdaniu zaznacz, że załączona kalkulacja ma charakter PRZYKŁADOWY i POMOCNICZY (niepotwierdzona przez klienta — ${activeTallyQuote.assumedSummary}) i zostanie uściślona po odpowiedzi na powyższe pytania.`
+                  : '4. Krótko wspomnij, że szczegółowa rozpiska kosztów znajduje się poniżej.',
                 activeTallyQuote.missingQuestions.length > 0
-                  ? `Jeśli to pomocne, na końcu w krótkich punktorach zapytaj o brakujące dane z Tally:\n${activeTallyQuote.missingQuestions.slice(0, 4).map((q) => `- ${q}`).join('\n')}`
+                  ? `\nBRAKUJĄCE PYTANIA Z TALLY / KAFELKÓW DO ZADANIA KLIENTOWI:\n${activeTallyQuote.missingQuestions.map((q) => `- ${q}`).join('\n')}`
                   : '',
               ]
                 .filter(Boolean)
