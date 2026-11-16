@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { getLiveTallyCpqContext } from './_tally';
 
 interface KnowledgeTileInput {
   id: string;
@@ -771,23 +772,29 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       );
 
       const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
+      const useTallyConfig = body.useTallyConfig !== false;
+      const tallyFormId = String(body.tallyFormId || 'dWO4Oq');
 
-      const liveWeb =
+      const [liveWeb, liveTally] = await Promise.all([
         useWebSearch && lastUserMessage
-          ? await fetchLiveWebContext(apiKey, companyIndustry, lastUserMessage)
-          : { summary: '', sources: [], searchQueries: [] };
+          ? fetchLiveWebContext(apiKey, companyIndustry, lastUserMessage)
+          : Promise.resolve({ summary: '', sources: [], searchQueries: [] }),
+        useTallyConfig
+          ? getLiveTallyCpqContext(tallyFormId)
+          : Promise.resolve(null),
+      ]);
 
       const systemText = [
         `Jesteś oficjalnym Ekspertem i Asystentem AI firmy "${companyName}" (branża: ${companyIndustry}).`,
         perspective === 'internal'
-          ? 'TRYB PRACY: WEWNĘTRZNY (Dla Pracownika / Handlowca / Managera). Masz dostęp do pełnej bazy wraz z notatkami wewnętrznymi, marżami, ryzykami operacyjnymi i checklistami oraz do aktualnej wiedzy z Internetu (Google Search).'
-          : 'TRYB PRACY: KLIENT ZEWNĘTRZNY. Odpowiadaj uprzejmie, profesjonalnie i sprzedażowo. Opieraj się na publicznej bazie wiedzy firmy oraz aktualnej wiedzy rynkowej z Internetu. Nie ujawniaj wewnętrznych marż ani poufnych procedur.',
+          ? 'TRYB PRACY: WEWNĘTRZNY (Dla Pracownika / Handlowca / Managera). Masz dostęp do pełnej bazy wraz z notatkami wewnętrznymi, marżami, ryzykami operacyjnymi i checklistami, do LIVE cennika Konfiguratora Tally (dWO4Oq) oraz do aktualnej wiedzy z Internetu (Google Search).'
+          : 'TRYB PRACY: KLIENT ZEWNĘTRZNY. Odpowiadaj uprzejmie, profesjonalnie i sprzedażowo. Opieraj się na publicznej bazie wiedzy firmy, LIVE cenniku Konfiguratora Tally (dWO4Oq) oraz aktualnej wiedzy rynkowej z Internetu. Nie ujawniaj wewnętrznych marż ani poufnych procedur.',
         langInstruction,
-        perspective === 'client' ? NEGATIVE_CONSTRAINTS_CLIENT : 'Nigdy nie wymyślaj parametrów technicznych ani liczb nieobecnych w bazie wiedzy lub źródłach z sieci.',
+        perspective === 'client' ? NEGATIVE_CONSTRAINTS_CLIENT : 'Nigdy nie wymyślaj parametrów technicznych ani liczb nieobecnych w bazie wiedzy, konfiguratorze Tally lub źródłach z sieci.',
         BUILDING_TYPOLOGY_DETECTION,
-        'ZASADY GŁĘBOKIEJ SYNTEZY I FORMATOWANIA (BAZA WIEDZY + INTERNET):',
-        '1. Łącz fakty z wewnętrznej Bazy Wiedzy Firmy z aktualnymi informacjami z Internetu (przepisy prawne, VAT, prawo budowlane, normy techniczne WT2021, logistyka, ceny rynkowe).',
-        '2. W sprawach oferty naszej firmy (ceny, modele, rabaty) pierwszeństwo ma Baza Wiedzy Firmy. Gdy pytanie wymaga przepisów lub tła rynkowego, użyj sekcji WIEDZA Z INTERNETU.',
+        'ZASADY GŁĘBOKIEJ SYNTEZY I FORMATOWANIA (BAZA WIEDZY + KONFIGURATOR TALLY + INTERNET):',
+        '1. Śmiało korzystaj z podpiętego LIVE cennika Konfiguratora Tally (dWO4Oq) poniżej! Przy każdym pytaniu o wycenę, dom parterowy (×1.0), dom z poddaszem (×1.5), dom piętrowy (×2.0), fundamenty (słupy 350 / ławy 600 / płyta 750), pakiety architekta, ogrzewanie, łazienkę, kuchnię, tarasy, kominek czy dostawę — obliczaj konkretne kwoty krok po kroku w tabeli Markdown oraz podawaj podsumowanie NETTO + VAT (8% mieszkalny / 23% rekreacyjny lub B2B) + BRUTTO.',
+        '2. Łącz twarde dane z Bazy Wiedzy Firmy i Konfiguratora Tally z aktualnymi informacjami z Internetu (przepisy prawne, VAT, prawo budowlane, normy WT2021).',
         '3. FORMATOWANIE ODPOWIEDZI (answer): Stosuj czytelny Markdown: krótkie sekcje `###`, wypunktowania, **pogrubienia kluczowych liczb** oraz przy porównaniach/kosztorysach/VAT przejrzyste tabele Markdown (`| Parametr | Wartość | Uwagi |`).',
         '4. W polu citedTileIds podaj dokładne wartości TILE_ID kafelków z bazy, z których skorzystałeś.',
         '5. W polu webFactsUsed wypisz 1-4 konkretne fakty/przepisy zaczerpnięte z Internetu (lub pustą tablicę, jeśli nie były potrzebne).',
@@ -795,6 +802,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         '',
         '=== BAZA WIEDZY FIRMY ===',
         knowledgeContext,
+        ...(liveTally ? ['', `=== ${liveTally.contextText}`] : []),
         ...(liveWeb.summary
           ? [
               '',
@@ -1135,15 +1143,23 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         return;
       }
 
+      const useTallyConfig = body.useTallyConfig !== false;
+      const tallyFormId = String(body.tallyFormId || 'dWO4Oq');
+
       const { contextText: knowledgeContext, stats: contextStats } = compileSmartKnowledgeContext(
         tiles,
         'internal',
         `${clientMessage} ${advisorNotes}`,
         8
       );
-      const liveWeb = useWebKnowledge
-        ? await fetchLiveWebContext(apiKey, companyIndustry, clientMessage)
-        : { summary: '', sources: [], searchQueries: [] };
+      const [liveWeb, liveTally] = await Promise.all([
+        useWebKnowledge
+          ? fetchLiveWebContext(apiKey, companyIndustry, clientMessage)
+          : Promise.resolve({ summary: '', sources: [], searchQueries: [] }),
+        useTallyConfig
+          ? getLiveTallyCpqContext(tallyFormId)
+          : Promise.resolve(null),
+      ]);
 
       const replyLangInstruction =
         replyLanguage === 'pl'
@@ -1198,13 +1214,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           : '',
         includeMiniQuote
           ? [
-              'MINI-KALKULACJA W TREŚCI (STANDARD EXECUTIVE):',
-              'Jeśli w Bazie Wiedzy pasują ceny, stawki VAT (8% lub 23%) lub koszty transportu/montażu, wstaw w replyBody przejrzyste zestawienie w formie czystych punktorów:',
-              '• Wariant / Zakres: ...',
-              '• Szacowana wartość netto: ... PLN',
-              '• Stawka VAT (8% Mieszkaniowy lub 23% Rekreacyjny/B2B): ... PLN',
-              '• Szacowana wartość brutto: ... PLN',
-              '• Transport / Fundamenty / Adnotacja: kalkulacja ma charakter orientacyjny i wymaga finalnego potwierdzenia technicznego.',
+              'MINI-KALKULACJA I ŚMIAŁE WYCENIANIE Z KONFIGURATORA TALLY (dWO4Oq) — STANDARD EXECUTIVE:',
+              'Jeśli klient pyta o cenę, budżet, wycenę domu (parterowy ×1.0, z poddaszem ×1.5, piętrowy ×2.0), fundamenty (słupy 350 / ławy 600 / płyta 750), standard Deweloperski vs NORVIL lub dodatki — ŚMIAŁO korzystaj z sekcji OFICJALNY LIVE CENNIK Z KONFIGURATORA TALLY poniżej i samodzielnie policz orientacyjny kosztorys krok po kroku:',
+              '• Wariant / Typ bryły i metraż (wyraźnie rozpisz: podstawa m² × mnożnik kondygnacji × stawka/m²): ... PLN netto',
+              '• Fundamenty (wybrany wariant słupy/ławy/płyta lub alternatywa): ... PLN netto',
+              '• Opcje dodatkowe (architekt, ogrzewanie, łazienka, kuchnia, dach MPZP, transport z Przemyśla): ... PLN',
+              '• Razem NETTO: ... PLN',
+              '• Stawka VAT (8% Mieszkaniowy całoroczny do 300 m² lub 23% Rekreacyjny/B2B — w razie wątpliwości podaj oba warianty): ... PLN',
+              '• Szacowana wartość BRUTTO: ... PLN',
+              '• Adnotacja: wycena ma charakter orientacyjny wg kalkulatora i wymaga finalnego potwierdzenia geotechnicznego oraz technicznego.',
             ].join('\n')
           : '',
         includedLinks.length > 0
@@ -1212,11 +1230,12 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           : '',
         'ANALIZA KONTAKTU I SYGNAŁÓW ZAKUPOWYCH: Wyciągnij z wiadomości klienta e-mail (detectedRecipientEmail, lub "" jeśli brak) oraz telefon (detectedRecipientPhone, lub "" jeśli brak). Oceń temperaturę leada (buyingSignal.temperature: HOT / WARM / COLD), wykryty typ obiektu/sprawy (uwzględnij w summaryOfInquiry oraz w internalAdvisorTip — np. „Typ: Dom całoroczny WT2021 vs Rekreacyjny vs B2B”) oraz obiekcje klienta.',
         useWebKnowledge
-          ? 'TRYB HYBRYDOWY (BAZA WIEDZY + LIVE GOOGLE SEARCH): Połącz twarde dane z Bazy Wiedzy Firmy (nie ujawniając poufnych marż [WEWNĘTRZNY]) z aktualnymi wynikami Google Search.'
-          : 'TRYB ŚCISŁEJ BAZY WIEDZY: Opieraj się wyłącznie na Bazie Wiedzy Firmy bez poufnych notatek wewnętrznych.',
+          ? 'TRYB HYBRYDOWY (BAZA WIEDZY + LIVE KONFIGURATOR TALLY + LIVE GOOGLE SEARCH): Połącz twarde dane z Bazy Wiedzy Firmy i LIVE stawek Konfiguratora Tally (dWO4Oq) (nie ujawniając poufnych marż [WEWNĘTRZNY]) z aktualnymi wynikami Google Search.'
+          : 'TRYB ŚCISŁEJ BAZY WIEDZY + LIVE TALLY: Opieraj się wyłącznie na Bazie Wiedzy Firmy oraz LIVE stawkach Konfiguratora Tally (dWO4Oq) bez poufnych notatek wewnętrznych.',
         '',
         '=== BAZA WIEDZY FIRMY ===',
         knowledgeContext,
+        ...(liveTally ? ['', `=== ${liveTally.contextText}`] : []),
         liveWeb.summary ? `\n=== AKTUALNE DANE Z GOOGLE SEARCH (LIVE WEB) ===\n${liveWeb.summary}` : '',
       ]
         .filter(Boolean)

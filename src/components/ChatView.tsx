@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   Briefcase,
+  Calculator,
   Check,
   Copy,
   Download,
@@ -365,6 +366,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
               {useWebSearch ? 'AKTYWNE' : 'WYŁ.'}
             </span>
           </button>
+
+          <span
+            className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-800"
+            title="Bot automatycznie pobiera aktualne ceny z konfiguratora Tally (dWO4Oq): parter, poddasze, piętro, fundamenty, dodatki i VAT"
+          >
+            <Calculator className="h-3.5 w-3.5 text-indigo-600" />
+            <span>Tally (dWO4Oq):</span>
+            <span className="rounded-md bg-indigo-600 px-1.5 py-0.5 text-[10px] font-extrabold uppercase text-white">
+              LIVE
+            </span>
+          </span>
 
           <button
             type="button"

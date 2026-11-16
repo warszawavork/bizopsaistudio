@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { neon } from '@neondatabase/serverless';
+import { buildTilesFromTallyHtml, extractTallyFormId } from './_tally';
 
 const FALLBACK_NEON_URL =
   'postgresql://neondb_owner:npg_IhW6l5JcHfgS@ep-green-art-zaw9ljx1-pooler.c-2.eu-west-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require';
@@ -213,119 +214,6 @@ function parseTallyWebhookSubmission(body: Record<string, unknown>) {
     valuePln,
     fullText,
   };
-}
-
-function buildTilesFromTallyHtml(html: string, formId: string) {
-  const match = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-  if (!match) {
-    throw new Error('Nie znaleziono struktury __NEXT_DATA__ w formularzu Tally.');
-  }
-  const parsed = JSON.parse(match[1]) as {
-    props?: {
-      pageProps?: {
-        name?: string;
-        blocks?: Array<{
-          type?: string;
-          groupUuid?: string;
-          payload?: {
-            text?: string;
-            title?: string;
-            name?: string;
-            safeHTMLSchema?: Array<[string, ...unknown[]]>;
-            calculatedFields?: Array<{ name?: string; value?: number }>;
-          };
-        }>;
-      };
-    };
-  };
-
-  const pp = parsed.props?.pageProps;
-  const formName = pp?.name || `Konfigurator Tally (${formId})`;
-  const blocks = Array.isArray(pp?.blocks) ? pp.blocks : [];
-
-  const getBlockText = (b: (typeof blocks)[number]) => {
-    const p = b.payload;
-    if (!p) return '';
-    if (Array.isArray(p.safeHTMLSchema)) {
-      return p.safeHTMLSchema.map((seg) => (Array.isArray(seg) ? String(seg[0] || '') : '')).join('').trim();
-    }
-    return String(p.text || p.title || p.name || '').trim();
-  };
-
-  const calcLines: string[] = [];
-  const sectionMap: Array<{ section: string; items: string[] }> = [];
-  let currentSec: { section: string; items: string[] } = { section: 'Parametry podstawowe', items: [] };
-
-  for (const b of blocks) {
-    const t = b.type || '';
-    if (t === 'CALCULATED_FIELDS' && Array.isArray(b.payload?.calculatedFields)) {
-      for (const cf of b.payload.calculatedFields) {
-        if (cf.name && typeof cf.value === 'number' && cf.value > 0) {
-          calcLines.push(`• ${cf.name}: ${cf.value.toLocaleString('pl-PL')} PLN`);
-        }
-      }
-      continue;
-    }
-
-    const txt = getBlockText(b).replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
-    if (!txt || txt.includes('Netto: @multiplier') || txt.includes('qqqqq')) continue;
-
-    if (t === 'PAGE_BREAK') {
-      if (currentSec.items.length > 0) sectionMap.push(currentSec);
-      currentSec = { section: txt, items: [] };
-    } else if (t === 'TITLE') {
-      currentSec.items.push(`\n[${txt}]`);
-    } else if (t === 'MULTIPLE_CHOICE_OPTION' || t === 'TEXT') {
-      if (currentSec.items.length < 40) {
-        currentSec.items.push(`• ${txt}`);
-      }
-    }
-  }
-  if (currentSec.items.length > 0) sectionMap.push(currentSec);
-
-  const tiles: Array<{
-    title: string;
-    category: string;
-    visibility: 'public' | 'internal';
-    priority: 'standard' | 'critical';
-    content: string;
-  }> = [];
-
-  if (calcLines.length > 0) {
-    tiles.push({
-      title: `Cennik Kalkulatora Tally (${formId}): Stawki bazowe i dodatki`,
-      category: 'Cennik',
-      visibility: 'public',
-      priority: 'critical',
-      content: [
-        `Oficjalne stawki netto pobrane bezpośrednio z konfiguratora "${formName}" (https://tally.so/r/${formId}):`,
-        ...calcLines,
-        '• Kondygnacje: Parter = ×1.0, Poddasze użytkowe = ×1.5, Piętro pełnowymiarowe = ×2.0.',
-        '• VAT: w konfiguratorze domyślnie brutto = netto × 1.23 (23% VAT); dla budynków mieszkalnych całorocznych osoby fizycznej do 300 m² możliwa stawka 8% VAT.',
-      ].join('\n'),
-    });
-  }
-
-  for (const sec of sectionMap) {
-    const cleanItems = sec.items.filter(Boolean).join('\n').trim();
-    if (cleanItems.length < 30) continue;
-    if (/wstęp|finalizacja/i.test(sec.section)) continue;
-    tiles.push({
-      title: `Tally (${formId}) — ${sec.section}`,
-      category: /fundament|ogrzew|dach|ociepl|techn/i.test(sec.section)
-        ? 'Technologia'
-        : /dostawa/i.test(sec.section)
-          ? 'Logistyka'
-          : /finans/i.test(sec.section)
-            ? 'Finanse & VAT'
-            : 'Oferta',
-      visibility: 'public',
-      priority: 'standard',
-      content: cleanItems.slice(0, 1800),
-    });
-  }
-
-  return { formName, tiles };
 }
 
 function extractMetaWebhookMessages(body: Record<string, unknown>): Array<{
@@ -564,13 +452,7 @@ export default async function handler(
 
   try {
     if (action === 'sync_tally_knowledge') {
-      const rawInput = String(body.formUrl || body.formId || 'dWO4Oq').trim();
-      const urlMatch = rawInput.match(/tally\.so\/(?:r|embed)\/([A-Za-z0-9_-]{4,24})/i);
-      const formId = urlMatch ? urlMatch[1] : rawInput.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || 'dWO4Oq';
-      if (!/^[A-Za-z0-9_-]{4,24}$/.test(formId)) {
-        sendJson(res, 400, { error: 'Podaj poprawny identyfikator lub link Tally (np. https://tally.so/r/dWO4Oq).' });
-        return;
-      }
+      const formId = extractTallyFormId(String(body.formUrl || body.formId || 'dWO4Oq'));
 
       const pageRes = await fetch(`https://tally.so/r/${encodeURIComponent(formId)}`, {
         headers: { 'User-Agent': 'BizOpsAIStudio/1.0 (+tally-sync)' },

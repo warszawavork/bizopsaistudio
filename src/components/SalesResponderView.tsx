@@ -1515,9 +1515,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                   ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
                   : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
               }`}
+              title="Bot automatycznie pobiera aktualne ceny z Tally (dWO4Oq): parter/poddasze/piętro, fundamenty, dodatki i VAT"
             >
               <Calculator className="h-3.5 w-3.5" />
-              Mini-kalkulacja VAT: {includeMiniQuote ? 'WŁ' : 'WYŁ'}
+              Wycena Tally Live (dWO4Oq): {includeMiniQuote ? 'WŁ' : 'WYŁ'}
             </button>
 
             <button

@@ -319,6 +319,8 @@ export async function generateSalesReply(params: {
   channel: 'email' | 'sms';
   replyLanguage: 'auto' | 'pl' | 'en' | 'no' | 'de';
   useWebKnowledge: boolean;
+  useTallyConfig?: boolean;
+  tallyFormId?: string;
   includeMiniQuote?: boolean;
   includedLinks?: Array<{ label: string; url: string }>;
   threadHistory?: Array<{ role: 'client' | 'advisor'; text: string }>;
