@@ -63,7 +63,6 @@ import { OpsView } from './components/OpsView';
 import { SettingsModal } from './components/SettingsModal';
 import { CustomProfileModal } from './components/CustomProfileModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
-import { ToastNotification, type ToastItem } from './components/ToastNotification';
 import { WelcomeModal, type UserProfile } from './components/WelcomeModal';
 import { GeminiQuotaWidget } from './components/GeminiQuotaWidget';
 import { QuickClipboardBar } from './components/QuickClipboardBar';
@@ -185,8 +184,6 @@ export function App() {
   } | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
-  const [floatingToasts, setFloatingToasts] = useState<ToastItem[]>([]);
   const [cloudSyncStatus, setCloudSyncStatus] = useState<SyncState>('connected');
   const [pendingQueueCount, setPendingQueueCount] = useState(0);
   const [cloudStats, setCloudStats] = useState<SyncStats | null>(null);
@@ -203,19 +200,8 @@ export function App() {
     return !localStorage.getItem('bizops_user_profile');
   });
 
-  const addFloatingToast = (item: Omit<ToastItem, 'id' | 'timestamp'>) => {
-    const newToast: ToastItem = {
-      id: `toast_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      ...item,
-    };
-    // Maksymalnie 1 dyskretne powiadomienie na raz
-    setFloatingToasts([newToast]);
-  };
-
-  const dismissFloatingToast = (id: string) => {
-    setFloatingToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+  // Wyskakujące powiadomienia wyłączone zgodnie z preferencją użytkownika
+  const addFloatingToast = (_item: unknown) => {};
 
   const preset = allPresets.find((p) => p.id === activePresetId) || allPresets[0];
   const currentTiles = tilesByPreset[preset.id] || preset.defaultTiles;
@@ -415,10 +401,8 @@ export function App() {
     }
   }, [appTheme]);
 
-  const showToast = (text: string, tone: 'ok' | 'err' = 'ok') => {
-    setToast({ text, tone });
-    window.setTimeout(() => setToast(null), 3200);
-  };
+  // Wyskakujące powiadomienia wyłączone zgodnie z preferencją użytkownika
+  const showToast = (_text: string, _tone: 'ok' | 'err' = 'ok') => {};
 
   const refreshCloudStats = () => {
     void fetchCloudAiStats()
@@ -1106,17 +1090,6 @@ export function App() {
         </div>
       </main>
 
-      {/* Toast Notification */}
-      {toast && (
-        <div
-          className={`fixed right-5 top-20 z-50 rounded-2xl px-4 py-2.5 text-xs font-semibold text-white shadow-xl transition ${
-            toast.tone === 'ok' ? 'bg-slate-900' : 'bg-rose-600'
-          }`}
-        >
-          {toast.text}
-        </div>
-      )}
-
       {/* Custom Company Profile Modal */}
       <CustomProfileModal
         open={customProfileOpen}
@@ -1174,9 +1147,6 @@ export function App() {
         onClose={() => setIntegrationsOpen(false)}
         onConfigSaved={() => showToast('Zapisano ustawienia integracji')}
       />
-
-      {/* Floating Realtime Cloud Toasts */}
-      <ToastNotification toasts={floatingToasts} onDismiss={dismissFloatingToast} />
 
       {/* Smart Quick Clipboard Listener Bar */}
       <QuickClipboardBar

@@ -49,11 +49,7 @@ export const QuickClipboardBar: React.FC<QuickClipboardBarProps> = ({
       }
     };
 
-    const handleWindowFocus = () => {
-      void checkClipboard();
-    };
-
-    // Skrót klawiszowy: Ctrl+Shift+V lub Alt+V do wymuszonego zaciągnięcia schowka
+    // Skrót klawiszowy: Ctrl+Shift+V lub Alt+V do ręcznego zaciągnięcia schowka (bez automatycznego wyskakiwania)
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.altKey && e.key.toLowerCase() === 'v') || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'v')) {
         e.preventDefault();
@@ -61,12 +57,10 @@ export const QuickClipboardBar: React.FC<QuickClipboardBarProps> = ({
       }
     };
 
-    window.addEventListener('focus', handleWindowFocus);
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
       active = false;
-      window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [dismissedText, currentMessageText]);
