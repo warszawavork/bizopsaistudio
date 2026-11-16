@@ -4,6 +4,8 @@ import {
   BookOpen,
   Calculator,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Copy,
   Edit3,
@@ -22,7 +24,6 @@ import {
   Mail,
   MapPin,
   MessageCircle,
-  MessageSquare,
   MessageSquarePlus,
   Mic,
   MicOff,
@@ -32,6 +33,7 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldAlert,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
@@ -254,6 +256,9 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [channel, setChannel] = useState<'email' | 'sms'>('email');
   const [replyLanguage, setReplyLanguage] = useState<'auto' | 'pl' | 'en' | 'no' | 'de'>('auto');
   const [useWebKnowledge, setUseWebKnowledge] = useState<boolean>(true);
+  const [showGeneratorOptions, setShowGeneratorOptions] = useState<boolean>(false);
+  const [showExtraExportActions, setShowExtraExportActions] = useState<boolean>(false);
+  const [showAnalysisDrawer, setShowAnalysisDrawer] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1720,43 +1725,6 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             />
           </div>
 
-          {/* Settings Row: Knowledge + Web Toggle, Tone, Language */}
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-[11px] font-semibold text-slate-600">
-                Język odpowiedzi dla klienta
-              </label>
-              <select
-                value={replyLanguage}
-                onChange={(e) =>
-                  setReplyLanguage(e.target.value as 'auto' | 'pl' | 'en' | 'no' | 'de')
-                }
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-indigo-500"
-              >
-                <option value="auto">Auto (rozpoznaj język klienta)</option>
-                <option value="pl">Polski (PL)</option>
-                <option value="en">Angielski (Business EN)</option>
-                <option value="no">Norweski / Eksport (NO)</option>
-                <option value="de">Niemiecki (DE)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-[11px] font-semibold text-slate-600">
-                Styl wiadomości
-              </label>
-              <select
-                value={tone}
-                onChange={(e) => setTone(e.target.value as 'sales' | 'concise' | 'formal')}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-indigo-500"
-              >
-                <option value="sales">Doradczy i sprzedażowy</option>
-                <option value="concise">Maksymalnie krótki i punktowy</option>
-                <option value="formal">Oficjalny / Gabinetowy B2B</option>
-              </select>
-            </div>
-          </div>
-
           {/* Channel Switcher: E-mail vs WhatsApp/SMS */}
           <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-slate-200/80 bg-slate-100/70 p-1">
             <button
@@ -1769,7 +1737,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               }`}
             >
               <Mail className="h-3.5 w-3.5 text-indigo-600" />
-              E-mail (Pełny + Stopka)
+              E-mail
             </button>
             <button
               type="button"
@@ -1781,286 +1749,9 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               }`}
             >
               <MessageCircle className="h-3.5 w-3.5 text-emerald-600" />
-              WhatsApp / SMS (Krótki)
+              WhatsApp / SMS
             </button>
           </div>
-
-          {/* Hybrid Knowledge + Internet Switch */}
-          <div className="flex items-center justify-between rounded-xl border border-indigo-100 bg-indigo-50/50 px-3.5 py-2.5">
-            <div className="flex items-center gap-2.5">
-              <Globe className="h-4 w-4 shrink-0 text-indigo-600" />
-              <div>
-                <p className="text-xs font-bold text-slate-900">
-                  Baza Wiedzy + Live Google Search
-                </p>
-                <p className="text-[11px] text-slate-500">
-                  Łączy cennik firmy z aktualnymi danymi z sieci i źródłami
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setUseWebKnowledge((v) => !v)}
-              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${
-                useWebKnowledge ? 'bg-indigo-600' : 'bg-slate-300'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-                  useWebKnowledge ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
-          {/* Pro Sales Tools Bar: Mini-Quote + Quick Links + Objections Playbook */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setIncludeMiniQuote((v) => !v)}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold transition ${
-                includeMiniQuote
-                  ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
-                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-              }`}
-              title="Bot automatycznie pobiera aktualne ceny z Tally (dWO4Oq): parter/poddasze/piętro, fundamenty, dodatki i VAT"
-            >
-              <Calculator className="h-3.5 w-3.5" />
-              Wycena Tally Live (dWO4Oq): {includeMiniQuote ? 'WŁ' : 'WYŁ'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowQuickLinks((v) => !v)}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold transition ${
-                selectedLinkIds.length > 0 || showQuickLinks
-                  ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
-                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              <Link2 className="h-3.5 w-3.5" />
-              Linki/PDF ({selectedLinkIds.length})
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowObjections((v) => !v)}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold transition ${
-                showObjections
-                  ? 'border-amber-300 bg-amber-50 text-amber-900'
-                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
-              Obiekcje ({objections.length})
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowTallyModal(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-gradient-to-r from-indigo-50 to-amber-50 px-2.5 py-1.5 text-[11px] font-extrabold text-indigo-900 hover:brightness-95 transition shadow-2xs"
-              title="Użyj własnego konfiguratora wycen Tally (dWO4Oq) — wynik wpadnie od razu do bota, Skrzynki i CRM!"
-            >
-              <Calculator className="h-3.5 w-3.5 text-indigo-600" />
-              Konfigurator Tally
-            </button>
-          </div>
-
-          {showQuickLinks && (
-            <div className="space-y-2 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3 text-xs">
-              <p className="text-[11px] font-bold text-indigo-950">
-                Zaznacz swoje linki (synchronizowane w chmurze) do wplecenia w odpowiedź:
-              </p>
-              {quickLinks.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-indigo-200 bg-white/80 px-3 py-2 text-[11px] text-slate-500">
-                  Brak zapisanych linków. Dodaj poniżej adres swojego katalogu PDF, cennika lub kalendarza spotkań.
-                </p>
-              ) : (
-                <div className="space-y-1.5">
-                  {quickLinks.map((lnk) => {
-                    const checked = selectedLinkIds.includes(lnk.id);
-                    const isEditingThis = editingLinkId === lnk.id;
-                    return (
-                      <div key={lnk.id} className="rounded-lg bg-white px-2.5 py-1.5 border border-slate-200/70">
-                        {isEditingThis ? (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <input
-                              type="text"
-                              value={editLinkLabel}
-                              onChange={(e) => setEditLinkLabel(e.target.value)}
-                              className="flex-1 min-w-[90px] rounded border border-indigo-300 px-2 py-0.5 text-[11px]"
-                            />
-                            <input
-                              type="url"
-                              value={editLinkUrl}
-                              onChange={(e) => setEditLinkUrl(e.target.value)}
-                              className="flex-1 min-w-[120px] rounded border border-indigo-300 px-2 py-0.5 text-[11px]"
-                            />
-                            <button
-                              type="button"
-                              onClick={handleSaveEditedLink}
-                              className="rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white"
-                            >
-                              Zapisz
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingLinkId(null)}
-                              className="rounded px-1.5 py-0.5 text-[10px] text-slate-500"
-                            >
-                              Anuluj
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-between gap-2">
-                            <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-800 cursor-pointer truncate">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() =>
-                                  setSelectedLinkIds((prev) =>
-                                    checked ? prev.filter((id) => id !== lnk.id) : [...prev, lnk.id]
-                                  )
-                                }
-                                className="rounded border-slate-300 text-indigo-600"
-                              />
-                              <span className="truncate">{lnk.label}</span>
-                              <span className="hidden sm:inline truncate text-[10px] font-normal text-slate-400">
-                                ({lnk.url})
-                              </span>
-                            </label>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingLinkId(lnk.id);
-                                  setEditLinkLabel(lnk.label);
-                                  setEditLinkUrl(lnk.url);
-                                }}
-                                className="rounded p-1 text-slate-400 hover:text-indigo-600"
-                                title="Edytuj link"
-                              >
-                                <Edit3 className="h-3 w-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  persistQuickLinks(quickLinks.filter((q) => q.id !== lnk.id));
-                                  setSelectedLinkIds((prev) => prev.filter((id) => id !== lnk.id));
-                                }}
-                                className="rounded p-1 text-slate-400 hover:text-rose-600"
-                                title="Usuń link"
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              <div className="grid grid-cols-5 gap-1.5 pt-1">
-                <input
-                  type="text"
-                  value={newLinkLabel}
-                  onChange={(e) => setNewLinkLabel(e.target.value)}
-                  placeholder="Nazwa (np. Katalog)"
-                  className="col-span-2 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px]"
-                />
-                <input
-                  type="url"
-                  value={newLinkUrl}
-                  onChange={(e) => setNewLinkUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="col-span-2 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px]"
-                />
-                <button
-                  type="button"
-                  onClick={handleAddQuickLink}
-                  className="rounded-lg bg-indigo-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-indigo-700"
-                >
-                  + Dodaj
-                </button>
-              </div>
-            </div>
-          )}
-
-          {showObjections && (
-            <div className="space-y-2.5 rounded-2xl border border-amber-200 bg-amber-50/50 p-3 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-1.5">
-                <span className="text-[11px] font-bold text-amber-950">
-                  Biblioteka Obiekcji (kliknij, aby dodać do wytycznych AI):
-                </span>
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {['Wszystkie', ...Array.from(new Set(objections.map((o) => o.category)))].map((cat) => (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setObjectionFilter(cat)}
-                    className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
-                      objectionFilter === cat
-                        ? 'bg-amber-600 text-white'
-                        : 'bg-white text-slate-600 border border-amber-200/70'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-              <div className="max-h-44 space-y-1.5 overflow-y-auto pr-1">
-                {objections
-                  .filter((o) => objectionFilter === 'Wszystkie' || o.category === objectionFilter)
-                  .map((obj) => (
-                    <button
-                      key={obj.id}
-                      type="button"
-                      onClick={() =>
-                        setAdvisorNotes((prev) =>
-                          prev ? `${prev} | ${obj.script}` : obj.script
-                        )
-                      }
-                      className="w-full rounded-xl border border-amber-200/80 bg-white p-2 text-left transition hover:border-amber-400 hover:bg-amber-50/60"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-bold text-slate-900">{obj.label}</span>
-                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
-                          {obj.category}
-                        </span>
-                      </div>
-                      <p className="mt-0.5 text-[10px] leading-snug text-slate-600">{obj.script}</p>
-                    </button>
-                  ))}
-              </div>
-              <div className="space-y-1.5 border-t border-amber-200/70 pt-2">
-                <input
-                  type="text"
-                  value={newObjLabel}
-                  onChange={(e) => setNewObjLabel(e.target.value)}
-                  placeholder="Nowa obiekcja (np. Dlaczego brak podpiwniczenia?)"
-                  className="w-full rounded-lg border border-amber-200 bg-white px-2.5 py-1 text-[11px]"
-                />
-                <div className="flex gap-1.5">
-                  <input
-                    type="text"
-                    value={newObjScript}
-                    onChange={(e) => setNewObjScript(e.target.value)}
-                    placeholder="Sprawdzony argument sprzedażowy..."
-                    className="flex-1 rounded-lg border border-amber-200 bg-white px-2.5 py-1 text-[11px]"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddObjection}
-                    className="rounded-lg bg-amber-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-amber-700"
-                  >
-                    Zapisz
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {error && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
@@ -2068,52 +1759,378 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             </div>
           )}
 
-          {/* Primary Action + Follow-up Po Ciszy */}
-          <div className="space-y-2">
+          {/* Primary Action */}
+          <button
+            type="button"
+            disabled={loading || (!clientMessage.trim() && !lastChatClientMsg)}
+            onClick={() => void handleGenerate()}
+            className="shimmer-bar flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-indigo-700 px-5 py-3.5 text-xs font-bold text-white shadow-md shadow-indigo-950/15 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-indigo-600/25 disabled:translate-y-0 disabled:opacity-50"
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-indigo-300" />
+            ) : (
+              <Sparkles className="h-4 w-4 text-indigo-300" />
+            )}
+            {loading ? 'Przygotowuję odpowiedź...' : 'Generuj odpowiedź dla klienta'}
+          </button>
+
+          {/* Collapsible Advanced Options & Tools */}
+          <div className="rounded-2xl border border-slate-200/80 bg-slate-50/70">
             <button
               type="button"
-              disabled={loading || (!clientMessage.trim() && !lastChatClientMsg)}
-              onClick={() => void handleGenerate()}
-              className="shimmer-bar flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-indigo-700 px-5 py-3.5 text-xs font-bold text-white shadow-md shadow-indigo-950/15 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-indigo-600/25 disabled:translate-y-0 disabled:opacity-50"
+              onClick={() => setShowGeneratorOptions((v) => !v)}
+              className="flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-left text-[11px] font-bold text-slate-700 hover:text-slate-950"
             >
-              {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin text-indigo-300" />
+              <span className="inline-flex items-center gap-2">
+                <SlidersHorizontal className="h-3.5 w-3.5 text-indigo-600" />
+                Opcje odpowiedzi i narzędzia
+                <span className="font-normal text-slate-400">
+                  ({replyLanguage.toUpperCase()} • {tone === 'sales' ? 'Doradczy' : tone === 'concise' ? 'Krótki' : 'Formalny'}
+                  {selectedLinkIds.length > 0 ? ` • ${selectedLinkIds.length} link` : ''})
+                </span>
+              </span>
+              {showGeneratorOptions ? (
+                <ChevronUp className="h-3.5 w-3.5 text-slate-400" />
               ) : (
-                <Sparkles className="h-4 w-4 text-indigo-300" />
+                <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
               )}
-              {loading
-                ? 'Przygotowuję odpowiedź dla klienta...'
-                : 'Generuj odpowiedź dla klienta'}
             </button>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/50 px-3 py-2">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-900">
-                <Clock className="h-3.5 w-3.5 text-amber-600" />
-                Follow-up po ciszy:
-              </span>
-              <div className="flex gap-1.5">
-                {[3, 7].map((days) => (
+            {showGeneratorOptions && (
+              <div className="space-y-3 border-t border-slate-200/80 p-3.5">
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-slate-600">
+                      Język odpowiedzi
+                    </label>
+                    <select
+                      value={replyLanguage}
+                      onChange={(e) =>
+                        setReplyLanguage(e.target.value as 'auto' | 'pl' | 'en' | 'no' | 'de')
+                      }
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-indigo-500"
+                    >
+                      <option value="auto">Auto (rozpoznaj język)</option>
+                      <option value="pl">Polski (PL)</option>
+                      <option value="en">Angielski (EN)</option>
+                      <option value="no">Norweski (NO)</option>
+                      <option value="de">Niemiecki (DE)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-slate-600">
+                      Styl wiadomości
+                    </label>
+                    <select
+                      value={tone}
+                      onChange={(e) => setTone(e.target.value as 'sales' | 'concise' | 'formal')}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-indigo-500"
+                    >
+                      <option value="sales">Doradczy i sprzedażowy</option>
+                      <option value="concise">Krótki i punktowy</option>
+                      <option value="formal">Oficjalny / B2B</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Hybrid Knowledge + Internet Switch */}
+                <div className="flex items-center justify-between rounded-xl border border-indigo-100 bg-white px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <Globe className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                    <span className="text-[11px] font-bold text-slate-800">
+                      Baza Wiedzy + Google Search
+                    </span>
+                  </div>
                   <button
-                    key={days}
                     type="button"
-                    disabled={loading || (!clientMessage.trim() && !lastChatClientMsg)}
-                    onClick={() =>
-                      void handleGenerate(
-                        clientMessage.trim() ? clientMessage : undefined,
-                        advisorNotes,
-                        replyLanguage,
-                        'concise',
-                        channel,
-                        days
-                      )
-                    }
-                    className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-40"
+                    onClick={() => setUseWebKnowledge((v) => !v)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${
+                      useWebKnowledge ? 'bg-indigo-600' : 'bg-slate-300'
+                    }`}
                   >
-                    Po {days} dniach ({channel === 'sms' ? 'SMS/WA' : 'E-mail'})
+                    <span
+                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${
+                        useWebKnowledge ? 'translate-x-4' : 'translate-x-1'
+                      }`}
+                    />
                   </button>
-                ))}
+                </div>
+
+                {/* Secondary Tools */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIncludeMiniQuote((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+                      includeMiniQuote
+                        ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                    title="Kontekst stawek z Tally (dWO4Oq) w trakcie odpowiedzi"
+                  >
+                    <Calculator className="h-3 w-3" />
+                    Tally kontekst: {includeMiniQuote ? 'WŁ' : 'WYŁ'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickLinks((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+                      selectedLinkIds.length > 0 || showQuickLinks
+                        ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Link2 className="h-3 w-3" />
+                    Linki/PDF ({selectedLinkIds.length})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowObjections((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-[11px] font-bold transition ${
+                      showObjections
+                        ? 'border-amber-300 bg-amber-50 text-amber-900'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <ShieldAlert className="h-3 w-3 text-amber-600" />
+                    Obiekcje ({objections.length})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowTallyModal(true)}
+                    className="inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-white px-2.5 py-1 text-[11px] font-bold text-indigo-800 hover:bg-indigo-50"
+                  >
+                    <Calculator className="h-3 w-3 text-indigo-600" />
+                    Formularz Tally
+                  </button>
+                </div>
+
+                {showQuickLinks && (
+                  <div className="space-y-2 rounded-xl border border-indigo-100 bg-white p-2.5 text-xs">
+                    <p className="text-[11px] font-bold text-indigo-950">
+                      Linki do wplecenia w wiadomość:
+                    </p>
+                    {quickLinks.length === 0 ? (
+                      <p className="rounded-lg border border-dashed border-indigo-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                        Brak zapisanych linków. Dodaj poniżej adres swojego katalogu PDF, cennika lub kalendarza spotkań.
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {quickLinks.map((lnk) => {
+                          const checked = selectedLinkIds.includes(lnk.id);
+                          const isEditingThis = editingLinkId === lnk.id;
+                          return (
+                            <div key={lnk.id} className="rounded-lg bg-slate-50 px-2.5 py-1.5 border border-slate-200/70">
+                              {isEditingThis ? (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <input
+                                    type="text"
+                                    value={editLinkLabel}
+                                    onChange={(e) => setEditLinkLabel(e.target.value)}
+                                    className="flex-1 min-w-[90px] rounded border border-indigo-300 px-2 py-0.5 text-[11px]"
+                                  />
+                                  <input
+                                    type="url"
+                                    value={editLinkUrl}
+                                    onChange={(e) => setEditLinkUrl(e.target.value)}
+                                    className="flex-1 min-w-[120px] rounded border border-indigo-300 px-2 py-0.5 text-[11px]"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={handleSaveEditedLink}
+                                    className="rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white"
+                                  >
+                                    Zapisz
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingLinkId(null)}
+                                    className="rounded px-1.5 py-0.5 text-[10px] text-slate-500"
+                                  >
+                                    Anuluj
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-between gap-2">
+                                  <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-800 cursor-pointer truncate">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() =>
+                                        setSelectedLinkIds((prev) =>
+                                          checked ? prev.filter((id) => id !== lnk.id) : [...prev, lnk.id]
+                                        )
+                                      }
+                                      className="rounded border-slate-300 text-indigo-600"
+                                    />
+                                    <span className="truncate">{lnk.label}</span>
+                                  </label>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingLinkId(lnk.id);
+                                        setEditLinkLabel(lnk.label);
+                                        setEditLinkUrl(lnk.url);
+                                      }}
+                                      className="rounded p-1 text-slate-400 hover:text-indigo-600"
+                                      title="Edytuj link"
+                                    >
+                                      <Edit3 className="h-3 w-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        persistQuickLinks(quickLinks.filter((q) => q.id !== lnk.id));
+                                        setSelectedLinkIds((prev) => prev.filter((id) => id !== lnk.id));
+                                      }}
+                                      className="rounded p-1 text-slate-400 hover:text-rose-600"
+                                      title="Usuń link"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-5 gap-1.5 pt-1">
+                      <input
+                        type="text"
+                        value={newLinkLabel}
+                        onChange={(e) => setNewLinkLabel(e.target.value)}
+                        placeholder="Nazwa"
+                        className="col-span-2 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px]"
+                      />
+                      <input
+                        type="url"
+                        value={newLinkUrl}
+                        onChange={(e) => setNewLinkUrl(e.target.value)}
+                        placeholder="https://..."
+                        className="col-span-2 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddQuickLink}
+                        className="rounded-lg bg-indigo-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-indigo-700"
+                      >
+                        + Dodaj
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {showObjections && (
+                  <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/70 p-2.5 text-xs">
+                    <span className="text-[11px] font-bold text-amber-950 block">
+                      Biblioteka Obiekcji (kliknij, aby wstawić):
+                    </span>
+                    <div className="flex flex-wrap gap-1">
+                      {['Wszystkie', ...Array.from(new Set(objections.map((o) => o.category)))].map((cat) => (
+                        <button
+                          key={cat}
+                          type="button"
+                          onClick={() => setObjectionFilter(cat)}
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                            objectionFilter === cat
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-white text-slate-600 border border-amber-200/70'
+                          }`}
+                        >
+                          {cat}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="max-h-36 space-y-1.5 overflow-y-auto pr-1">
+                      {objections
+                        .filter((o) => objectionFilter === 'Wszystkie' || o.category === objectionFilter)
+                        .map((obj) => (
+                          <button
+                            key={obj.id}
+                            type="button"
+                            onClick={() =>
+                              setAdvisorNotes((prev) =>
+                                prev ? `${prev} | ${obj.script}` : obj.script
+                              )
+                            }
+                            className="w-full rounded-lg border border-amber-200/80 bg-white p-2 text-left transition hover:border-amber-400"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-bold text-slate-900">{obj.label}</span>
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
+                                {obj.category}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-[10px] leading-snug text-slate-600">{obj.script}</p>
+                          </button>
+                        ))}
+                    </div>
+                    <div className="space-y-1.5 border-t border-amber-200/70 pt-2">
+                      <input
+                        type="text"
+                        value={newObjLabel}
+                        onChange={(e) => setNewObjLabel(e.target.value)}
+                        placeholder="Nowa obiekcja..."
+                        className="w-full rounded-lg border border-amber-200 bg-white px-2.5 py-1 text-[11px]"
+                      />
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          value={newObjScript}
+                          onChange={(e) => setNewObjScript(e.target.value)}
+                          placeholder="Sprawdzony argument..."
+                          className="flex-1 rounded-lg border border-amber-200 bg-white px-2.5 py-1 text-[11px]"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddObjection}
+                          className="rounded-lg bg-amber-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-amber-700"
+                        >
+                          Zapisz
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Follow-up Po Ciszy */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3 py-2">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-900">
+                    <Clock className="h-3.5 w-3.5 text-amber-600" />
+                    Follow-up po ciszy:
+                  </span>
+                  <div className="flex gap-1.5">
+                    {[3, 7].map((days) => (
+                      <button
+                        key={days}
+                        type="button"
+                        disabled={loading || (!clientMessage.trim() && !lastChatClientMsg)}
+                        onClick={() =>
+                          void handleGenerate(
+                            clientMessage.trim() ? clientMessage : undefined,
+                            advisorNotes,
+                            replyLanguage,
+                            'concise',
+                            channel,
+                            days
+                          )
+                        }
+                        className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-40"
+                      >
+                        Po {days} dniach
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>
@@ -2213,19 +2230,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
             {/* Main Response Card */}
             <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-6 space-y-4">
-              {/* Top Bar: Client & Copy Actions */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700">
-                      Klient: {latestReply.detectedClientName}
-                    </span>
-                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                      Język: {latestReply.detectedLanguage}
+              {/* Top Bar: Clean Client Info & Primary Actions */}
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3.5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-lg bg-indigo-50 px-2.5 py-0.5 text-xs font-extrabold text-indigo-800">
+                      {latestReply.detectedClientName || 'Klient'}
                     </span>
                     {latestReply.buyingSignal && (
                       <span
-                        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-extrabold ${
+                        className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-extrabold ${
                           latestReply.buyingSignal.temperature === 'HOT'
                             ? 'bg-rose-100 text-rose-700'
                             : latestReply.buyingSignal.temperature === 'WARM'
@@ -2235,67 +2249,24 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                         title={latestReply.buyingSignal.summary}
                       >
                         <Flame className="h-3 w-3" />
-                        Lead: {latestReply.buyingSignal.temperature}
+                        {latestReply.buyingSignal.temperature}
                       </span>
                     )}
                     {latestReply.detectedRecipientEmail && (
-                      <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-mono text-slate-600">
+                      <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-[11px] font-mono text-slate-600">
                         {latestReply.detectedRecipientEmail}
                       </span>
                     )}
                     {latestReply.detectedRecipientPhone && (
-                      <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-mono text-emerald-700">
+                      <span className="rounded-lg bg-emerald-50 px-2 py-0.5 text-[11px] font-mono text-emerald-700">
                         {latestReply.detectedRecipientPhone}
                       </span>
                     )}
-                    <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
-                      <Clock className="h-3 w-3" />
-                      Zaoszczędzono ~{latestReply.estimatedTimeSavedMinutes || 15} min
-                    </span>
-                    {latestReply.tallyQuote && latestReply.tallyQuote.totalNetPln > 0 && (
-                      <span
-                        className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-800"
-                        title={`Wyliczono bezpośrednio przez silnik Tally (${latestReply.tallyQuote.formId})`}
-                      >
-                        <Calculator className="h-3 w-3" />
-                        Tally Engine: {latestReply.tallyQuote.totalNetPln.toLocaleString('pl-PL')} zł netto
-                      </span>
-                    )}
-                    {latestReply.contextStats && (
-                      <span
-                        className="rounded-md border border-indigo-200 bg-indigo-50/70 px-2 py-0.5 text-[10px] font-semibold text-indigo-700"
-                        title={`Inteligentny Kompilator Kontekstu wybrał ${latestReply.contextStats.selectedTilesCount} z ${latestReply.contextStats.totalActiveTiles} kafelków (${latestReply.contextStats.criticalCount} krytycznych, odfiltrowano ${latestReply.contextStats.omittedTilesCount}, oszczędność ok. ${latestReply.contextStats.tokensSavedEstimate} tokenów)`}
-                      >
-                        Kontekst: {latestReply.contextStats.selectedTilesCount}/{latestReply.contextStats.totalActiveTiles}
-                        {latestReply.contextStats.tokensSavedEstimate > 0
-                          ? ` (-${latestReply.contextStats.tokensSavedEstimate} tok.)`
-                          : ''}
-                      </span>
-                    )}
                   </div>
-                  <p className="mt-1 text-xs text-slate-500">{latestReply.summaryOfInquiry}</p>
-                  {latestReply.buyingSignal && (
-                    <p className="mt-1 text-[11px] font-medium text-indigo-700">
-                      Sygnał zakupowy: {latestReply.buyingSignal.summary}
-                      {latestReply.buyingSignal.detectedObjections.length > 0 &&
-                        ` • Obiekcje: ${latestReply.buyingSignal.detectedObjections.join(', ')}`}
-                    </p>
-                  )}
+                  <p className="mt-1.5 text-xs text-slate-500 line-clamp-2">{latestReply.summaryOfInquiry}</p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleCopy('body')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    {copiedMode === 'body' ? (
-                      <Check className="h-3.5 w-3.5 text-emerald-600" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5" />
-                    )}
-                    {copiedMode === 'body' ? 'Skopiowano treść' : 'Kopiuj treść'}
-                  </button>
+                <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                   <button
                     type="button"
                     onClick={() => handleCopy('all')}
@@ -2306,66 +2277,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     ) : (
                       <Copy className="h-3.5 w-3.5" />
                     )}
-                    {copiedMode === 'all' ? 'Skopiowano całość!' : 'Kopiuj Temat + Treść'}
+                    {copiedMode === 'all' ? 'Skopiowano!' : 'Kopiuj całość'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const textToShare = `${editableSubject ? `*${editableSubject}*\n\n` : ''}${editableBody}`;
-                      const encoded = encodeURIComponent(textToShare);
-                      // Próba otwarcia protokołu natywnego WhatsApp na Windowsie, a w nowej karcie WhatsApp Web
-                      window.open(`https://web.whatsapp.com/send?text=${encoded}`, '_blank');
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 transition shadow-2xs"
-                    title="Otwórz czat WhatsApp Web lub Desktop z gotową odpowiedzią"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5 text-emerald-600" />
-                    Wyślij na WhatsApp
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleCopyRichEmail()}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
-                    title="Kopiuje gotowy sformatowany HTML + linki źródłowe do wklejenia w Outlook / Gmail (Ctrl+V)"
-                  >
-                    {copiedMode === 'rich' ? (
-                      <Check className="h-3.5 w-3.5 text-emerald-600" />
-                    ) : (
-                      <Mail className="h-3.5 w-3.5" />
-                    )}
-                    {copiedMode === 'rich' ? 'Skopiowano E-mail HTML!' : 'Kopiuj gotowy E-mail (HTML)'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleExportPdf()}
-                    disabled={exportingPdf}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-60"
-                    title="Pobierz ofertę / odpowiedź jako sformatowany dokument PDF A4"
-                  >
-                    {exportingPdf ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <FileText className="h-3.5 w-3.5 text-indigo-600" />
-                    )}
-                    PDF
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handlePrintReply}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-300 hover:text-indigo-700"
-                    title="Drukuj lub zapisz jako PDF przez podgląd wydruku"
-                  >
-                    <Printer className="h-3.5 w-3.5" />
-                    Drukuj
-                  </button>
-                  <a
-                    href={`mailto:${encodeURIComponent(latestReply.detectedRecipientEmail || '')}?subject=${encodeURIComponent(editableSubject)}&body=${encodeURIComponent(editableBody)}`}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
-                    title="Otwórz gotowy szkic w domyślnym programie pocztowym"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    Otwórz w poczcie
-                  </a>
                   <button
                     type="button"
                     disabled={sendingWhatsApp}
@@ -2389,15 +2302,12 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                           setSendingWhatsApp(false);
                         }
                       } else {
-                        window.open(
-                          `https://wa.me/${targetPhone}?text=${encodeURIComponent(editableBody)}`,
-                          '_blank',
-                          'noopener,noreferrer'
-                        );
+                        const textToShare = `${editableSubject ? `*${editableSubject}*\n\n` : ''}${editableBody}`;
+                        window.open(`https://web.whatsapp.com/send?text=${encodeURIComponent(textToShare)}`, '_blank');
                       }
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                    title="Wyślij przez WhatsApp Cloud API lub otwórz w WhatsApp Web"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                    title="Wyślij na WhatsApp"
                   >
                     {sendingWhatsApp ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -2405,6 +2315,75 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       <MessageCircle className="h-3.5 w-3.5" />
                     )}
                     WhatsApp
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowExtraExportActions((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                      showExtraExportActions
+                        ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Poczta / PDF
+                    {showExtraExportActions ? (
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {showExtraExportActions && (
+                <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-slate-200/80 bg-slate-50 p-2.5">
+                  <button
+                    type="button"
+                    onClick={() => handleCopy('body')}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    {copiedMode === 'body' ? (
+                      <Check className="h-3 w-3 text-emerald-600" />
+                    ) : (
+                      <Copy className="h-3 w-3" />
+                    )}
+                    {copiedMode === 'body' ? 'Skopiowano treść' : 'Kopiuj samą treść'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyRichEmail()}
+                    className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    {copiedMode === 'rich' ? (
+                      <Check className="h-3 w-3 text-emerald-600" />
+                    ) : (
+                      <Mail className="h-3 w-3" />
+                    )}
+                    {copiedMode === 'rich' ? 'Skopiowano HTML!' : 'E-mail (HTML)'}
+                  </button>
+                  <a
+                    href={`mailto:${encodeURIComponent(latestReply.detectedRecipientEmail || '')}?subject=${encodeURIComponent(editableSubject)}&body=${encodeURIComponent(editableBody)}`}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:text-indigo-700"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    Otwórz w poczcie
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => void handleExportPdf()}
+                    disabled={exportingPdf}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:text-indigo-700 disabled:opacity-60"
+                  >
+                    {exportingPdf ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3 text-indigo-600" />}
+                    PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePrintReply}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:text-indigo-700"
+                  >
+                    <Printer className="h-3 w-3" />
+                    Drukuj
                   </button>
                   {getStoredIntegrationsConfig().gmail.mode === 'webhook' &&
                     getStoredIntegrationsConfig().gmail.webhookUrl && (
@@ -2430,13 +2409,9 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                             setSendingGmail(false);
                           }
                         }}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                        className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
                       >
-                        {sendingGmail ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Mail className="h-3.5 w-3.5" />
-                        )}
+                        {sendingGmail ? <Loader2 className="h-3 w-3 animate-spin" /> : <Mail className="h-3 w-3" />}
                         Mostek Gmail
                       </button>
                     )}
@@ -2462,19 +2437,14 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                         );
                         setSendingWebhook(false);
                       }}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-50"
-                      title="Wyślij odpowiedź i dane klienta do Make / n8n / CRM"
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:text-indigo-700 disabled:opacity-50"
                     >
-                      {sendingWebhook ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Webhook className="h-3.5 w-3.5 text-indigo-600" />
-                      )}
+                      {sendingWebhook ? <Loader2 className="h-3 w-3 animate-spin" /> : <Webhook className="h-3 w-3 text-indigo-600" />}
                       Wyślij do Make
                     </button>
                   )}
                 </div>
-              </div>
+              )}
 
               {channelStatus && (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
@@ -2482,18 +2452,13 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                 </div>
               )}
 
-              {/* BLOK A: Polecenia kalkulacyjne Tally (dWO4Oq) — domyślnie zwarty pasek, rozwija się po wyliczeniu */}
+              {/* BLOK A: Polecenia kalkulacyjne Tally (dWO4Oq) — prosty pasek akcji dla handlowca */}
               {!integratedTallyQuote || integratedTallyQuote.breakdown.length === 0 ? (
-                <div className="rounded-2xl border border-slate-200/90 bg-slate-50/80 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2 py-0.5 text-[10px] font-extrabold text-white">
-                      <Calculator className="h-3 w-3 text-emerald-300" />
-                      Polecenia kalkulacyjne (Tally dWO4Oq)
-                    </span>
-                    <span className="text-[11px] font-medium text-slate-500">
-                      {integratingTally
-                        ? 'Liczenie wyceny na żywo z Tally...'
-                        : 'Tryb bazowy: sama odpowiedź — wybierz polecenie, aby wyliczyć i dopiąć kosztorys'}
+                <div className="rounded-2xl border border-slate-200/80 bg-slate-50/70 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Calculator className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                    <span className="text-xs font-bold text-slate-800">
+                      {integratingTally ? 'Liczenie wyceny z Tally...' : 'Dodaj kalkulację Tally:'}
                     </span>
                   </div>
 
@@ -2505,12 +2470,20 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-2xs transition hover:bg-emerald-700 disabled:opacity-50"
                       title="Wylicz pozycje z Tally na bazie rozmowy i dopnij pełny kosztorys pod odpowiedzią"
                     >
-                      {integratingTally ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Calculator className="h-3 w-3" />
-                      )}
-                      + Wylicz i dołącz kosztorys
+                      {integratingTally ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                      Dołącz kosztorys
+                    </button>
+                    <button
+                      type="button"
+                      disabled={integratingTally || loading}
+                      onClick={() =>
+                        void handleIntegrateTallyQuote('combined', { hideItemizedPrices: true })
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                      title="Pokaż zakres i wyłącznie cenę końcową (bez cen jednostkowych)"
+                    >
+                      <EyeOff className="h-3 w-3" />
+                      Tylko cena końcowa
                     </button>
                     <button
                       type="button"
@@ -2525,28 +2498,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       title="Wylicz kosztorys i dopnij na dole przykład dostawy z płytą fundamentową do Warszawy"
                     >
                       <MapPin className="h-3 w-3" />
-                      + Warszawa + płyta
-                    </button>
-                    <button
-                      type="button"
-                      disabled={integratingTally || loading}
-                      onClick={() =>
-                        void handleIntegrateTallyQuote('combined', { hideItemizedPrices: true })
-                      }
-                      className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-                      title="Wylicz zakres z Tally, ale ukryj ceny pozycji — zostaw tylko cenę końcową"
-                    >
-                      <EyeOff className="h-3 w-3" />
-                      Ukryj cenniki (tylko finał)
+                      Warszawa + płyta
                     </button>
                     <button
                       type="button"
                       disabled={integratingTally || loading}
                       onClick={() => void handleIntegrateTallyQuote('quote_only')}
-                      className="inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[11px] font-bold text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
                       title="Zamień wiadomość na sam czysty kosztorys Tally"
                     >
-                      Tylko sam kosztorys
+                      Sam kosztorys
                     </button>
                   </div>
                 </div>
@@ -2846,7 +2807,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               {/* Quick 1-Click Refinements */}
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
                 <span className="text-[11px] font-semibold text-slate-500">
-                  Szybka korekta AI 1-kliknięciem:
+                  Szybkie poprawki:
                 </span>
                 <div className="flex flex-wrap gap-1.5">
                   <button
@@ -2862,7 +2823,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     }
                     className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50"
                   >
-                    Skróć i wypunktuj
+                    Skróć
                   </button>
                   <button
                     type="button"
@@ -2870,14 +2831,14 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     onClick={() =>
                       void handleGenerate(
                         clientMessage,
-                        'Dodaj dokładne zestawienie cenowe, transze płatności oraz zaproponuj rozmowę telefoniczną.',
+                        'Dodaj dokładne warunki realizacji, płatności oraz zaproponuj rozmowę telefoniczną.',
                         replyLanguage,
                         'sales'
                       )
                     }
                     className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50"
                   >
-                    Rozwiń wycenę i warunki
+                    Rozwiń o warunki
                   </button>
                   <button
                     type="button"
@@ -2894,7 +2855,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     }
                     className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100"
                   >
-                    Follow-up (cisza 3 dni)
+                    Follow-up 3 dni
                   </button>
                   <button
                     type="button"
@@ -2911,132 +2872,144 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                     }
                     className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100"
                   >
-                    Follow-up (cisza 7 dni)
-                  </button>
-                  <button
-                    type="button"
-                    disabled={loading || Boolean(translatingLang)}
-                    onClick={() => void handleSwitchDraftLanguage('en')}
-                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
-                      activeDraftLang === 'en'
-                        ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
-                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-indigo-300 hover:bg-indigo-50'
-                    }`}
-                  >
-                    {translatingLang === 'en' ? 'Tłumaczę na EN...' : 'Przetłumacz 1:1 na angielski (EN)'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={loading || Boolean(translatingLang)}
-                    onClick={() => void handleSwitchDraftLanguage('pl')}
-                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
-                      activeDraftLang === 'pl'
-                        ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
-                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-indigo-300 hover:bg-indigo-50'
-                    }`}
-                  >
-                    {translatingLang === 'pl' ? 'Tłumaczę na PL...' : 'Przetłumacz 1:1 na polski (PL)'}
+                    Follow-up 7 dni
                   </button>
                 </div>
               </div>
             </div>
 
-            {/* Sources Breakdown: Company Knowledge vs Web/Market Info */}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-5">
-                <div className="mb-2.5 flex items-center justify-between">
-                  <h4 className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                    <BookOpen className="h-3.5 w-3.5 text-emerald-600" />
-                    Z Bazy Wiedzy Firmy
-                  </h4>
-                  <button
-                    type="button"
-                    onClick={onOpenKnowledge}
-                    className="text-[11px] font-semibold text-indigo-600 hover:underline"
-                  >
-                    Edytuj wiedzę →
-                  </button>
+            {/* Collapsible Advisor Insights & Knowledge Sources */}
+            <div className="soft-card rounded-2xl border border-slate-200/80 bg-white overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowAnalysisDrawer((v) => !v)}
+                className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-slate-50/70"
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Lightbulb className="h-4 w-4 shrink-0 text-amber-500" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-slate-900">
+                      Podpowiedzi dla handlowca i źródła AI
+                    </p>
+                    <p className="truncate text-[11px] text-slate-500">
+                      {latestReply.followUpQuestionsToClient.length > 0
+                        ? `${latestReply.followUpQuestionsToClient.length} pytania do zadania klientowi • `
+                        : ''}
+                      {latestReply.companyFactsUsed.length} faktów z Bazy Wiedzy
+                    </p>
+                  </div>
                 </div>
-                <ul className="space-y-1.5 text-xs text-slate-600">
-                  {latestReply.companyFactsUsed.map((fact, idx) => (
-                    <li key={idx} className="flex items-start gap-2">
-                      <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
-                      <span>{fact}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="soft-card rounded-3xl border border-slate-200/80 bg-white p-5">
-                <div className="mb-2.5 flex items-center justify-between gap-2">
-                  <h4 className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                    <Globe className="h-3.5 w-3.5 text-indigo-600" />
-                    Informacje z Internetu i rynku
-                  </h4>
-                  {onQuickAddTile && latestReply.webAndMarketFactsUsed.length > 0 && (
-                    <button
-                      type="button"
-                      disabled={savedGapToKb}
-                      onClick={() => {
-                        onQuickAddTile({
-                          title: `Uzupełnienie wiedzy: ${editableSubject.slice(0, 45) || 'Zapytanie klienta'}`,
-                          category: 'Oferta',
-                          content: latestReply.webAndMarketFactsUsed.join('\n• '),
-                        });
-                        setSavedGapToKb(true);
-                      }}
-                      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
-                        savedGapToKb
-                          ? 'bg-emerald-50 text-emerald-700'
-                          : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
-                      }`}
-                    >
-                      {savedGapToKb ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
-                      {savedGapToKb ? 'Dodano do Bazy' : 'Zapisz w Bazie Wiedzy'}
-                    </button>
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                  {showAnalysisDrawer ? 'Ukryj' : 'Rozwiń'}
+                  {showAnalysisDrawer ? (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
                   )}
-                </div>
-                {latestReply.webAndMarketFactsUsed.length === 0 &&
-                (!latestReply.webSources || latestReply.webSources.length === 0) &&
-                (!latestReply.searchQueries || latestReply.searchQueries.length === 0) ? (
-                  <p className="text-xs text-slate-400">
-                    Odpowiedź oparta w 100% na wewnętrznej Bazie Wiedzy.
-                  </p>
-                ) : (
-                  <WebSourcesPanel
-                    webFactsUsed={latestReply.webAndMarketFactsUsed}
-                    webSources={latestReply.webSources}
-                    searchQueries={latestReply.searchQueries}
-                    onInsertSourceLink={handleInsertSourceLink}
-                    title="Źródła zewnętrzne (Google Search) — kliknij, aby otworzyć lub wkleić"
-                  />
-                )}
-              </div>
-            </div>
+                </span>
+              </button>
 
-            {/* Internal Advisor Tip & Follow-up Questions */}
-            <div className="rounded-2xl border border-amber-200/80 bg-amber-50/60 p-4">
-              <div className="flex items-start gap-2.5">
-                <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                <div className="space-y-2 text-xs">
-                  <p className="font-bold text-amber-950">
-                    Wskazówka wewnętrzna dla handlowca (niewidoczna dla klienta):
-                  </p>
-                  <p className="text-amber-900 leading-relaxed">{latestReply.internalAdvisorTip}</p>
-                  {latestReply.followUpQuestionsToClient.length > 0 && (
-                    <div className="pt-1">
-                      <p className="flex items-center gap-1 font-semibold text-amber-950">
-                        <HelpCircle className="h-3.5 w-3.5" />O co warto dopytać klienta w rozmowie:
-                      </p>
-                      <ul className="mt-1 list-disc pl-4 space-y-0.5 text-amber-900">
-                        {latestReply.followUpQuestionsToClient.map((q, i) => (
-                          <li key={i}>{q}</li>
+              {showAnalysisDrawer && (
+                <div className="space-y-3 border-t border-slate-100 p-4">
+                  {/* Internal Advisor Tip & Follow-up Questions */}
+                  <div className="rounded-2xl border border-amber-200/80 bg-amber-50/60 p-3.5">
+                    <div className="flex items-start gap-2.5">
+                      <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                      <div className="space-y-2 text-xs">
+                        <p className="font-bold text-amber-950">
+                          Wskazówka dla handlowca (niewidoczna dla klienta):
+                        </p>
+                        <p className="text-amber-900 leading-relaxed">{latestReply.internalAdvisorTip}</p>
+                        {latestReply.followUpQuestionsToClient.length > 0 && (
+                          <div className="pt-1">
+                            <p className="flex items-center gap-1 font-semibold text-amber-950">
+                              <HelpCircle className="h-3.5 w-3.5" />O co warto dopytać klienta:
+                            </p>
+                            <ul className="mt-1 list-disc pl-4 space-y-0.5 text-amber-900">
+                              {latestReply.followUpQuestionsToClient.map((q, i) => (
+                                <li key={i}>{q}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sources Breakdown */}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/50 p-3.5">
+                      <div className="mb-2 flex items-center justify-between">
+                        <h4 className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
+                          <BookOpen className="h-3.5 w-3.5 text-emerald-600" />
+                          Z Bazy Wiedzy Firmy
+                        </h4>
+                        <button
+                          type="button"
+                          onClick={onOpenKnowledge}
+                          className="text-[11px] font-semibold text-indigo-600 hover:underline"
+                        >
+                          Edytuj →
+                        </button>
+                      </div>
+                      <ul className="space-y-1 text-xs text-slate-600">
+                        {latestReply.companyFactsUsed.map((fact, idx) => (
+                          <li key={idx} className="flex items-start gap-2">
+                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                            <span>{fact}</span>
+                          </li>
                         ))}
                       </ul>
                     </div>
-                  )}
+
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/50 p-3.5">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <h4 className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
+                          <Globe className="h-3.5 w-3.5 text-indigo-600" />
+                          Z Internetu i rynku
+                        </h4>
+                        {onQuickAddTile && latestReply.webAndMarketFactsUsed.length > 0 && (
+                          <button
+                            type="button"
+                            disabled={savedGapToKb}
+                            onClick={() => {
+                              onQuickAddTile({
+                                title: `Uzupełnienie wiedzy: ${editableSubject.slice(0, 45) || 'Zapytanie klienta'}`,
+                                category: 'Oferta',
+                                content: latestReply.webAndMarketFactsUsed.join('\n• '),
+                              });
+                              setSavedGapToKb(true);
+                            }}
+                            className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
+                              savedGapToKb
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                            }`}
+                          >
+                            {savedGapToKb ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+                            {savedGapToKb ? 'Dodano' : 'Do Bazy'}
+                          </button>
+                        )}
+                      </div>
+                      {latestReply.webAndMarketFactsUsed.length === 0 &&
+                      (!latestReply.webSources || latestReply.webSources.length === 0) &&
+                      (!latestReply.searchQueries || latestReply.searchQueries.length === 0) ? (
+                        <p className="text-xs text-slate-400">
+                          Odpowiedź oparta w 100% na Bazie Wiedzy Firmy.
+                        </p>
+                      ) : (
+                        <WebSourcesPanel
+                          webFactsUsed={latestReply.webAndMarketFactsUsed}
+                          webSources={latestReply.webSources}
+                          searchQueries={latestReply.searchQueries}
+                          onInsertSourceLink={handleInsertSourceLink}
+                          title="Źródła Google Search"
+                        />
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         )}
