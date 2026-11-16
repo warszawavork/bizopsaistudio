@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Award,
+  Calculator,
   Check,
   Edit3,
   FileDown,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import type { CrmDeal, IndustryPreset, MascotMood } from '../types';
 import { QuickQuoteModal } from './QuickQuoteModal';
+import { TallyConfiguratorModal } from './TallyConfiguratorModal';
 
 interface PipelineViewProps {
   preset: IndustryPreset;
@@ -74,6 +76,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   onSendWebhookPayload,
 }) => {
   const [showAdd, setShowAdd] = useState(false);
+  const [showTallyModal, setShowTallyModal] = useState(false);
   const [quoteDeal, setQuoteDeal] = useState<CrmDeal | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [riskFilter, setRiskFilter] = useState<'ALL' | 'HIGH' | 'WON'>('ALL');
@@ -182,6 +185,14 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowTallyModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-400/40 bg-white/10 px-3.5 py-2.5 text-xs font-bold text-amber-200 backdrop-blur-sm transition hover:bg-white/20"
+            >
+              <Calculator className="h-4 w-4 text-amber-300" />
+              Kalkulator Tally (dWO4Oq)
+            </button>
             <button
               type="button"
               onClick={() => setShowAdd((s) => !s)}
@@ -552,6 +563,20 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
         onDownloaded={(qNum) =>
           onMascotUpdate('happy', `Wygenerowałem Ofertę PDF A4 nr ${qNum} z transzami 30/40/30!`)
         }
+      />
+
+      <TallyConfiguratorModal
+        open={showTallyModal}
+        onClose={() => setShowTallyModal(false)}
+        presetName={preset.name}
+        onCreateDeal={(newDeal) => {
+          const created: CrmDeal = {
+            id: `deal_${Date.now()}`,
+            createdAt: new Date().toISOString().slice(0, 10),
+            ...newDeal,
+          };
+          onDealsChange([created, ...deals]);
+        }}
       />
     </div>
   );

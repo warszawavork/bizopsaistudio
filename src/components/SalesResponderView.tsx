@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import type {
   AppLanguage,
+  CrmDeal,
   InboxFeedItem,
   IndustryPreset,
   KnowledgeTile,
@@ -59,6 +60,7 @@ import {
 import { copyRichEmailToClipboard, formatStructuredReplyText } from '../utils/emailExport';
 import { idbGetWorkspaceItem } from '../utils/offlineDb';
 import { exportSalesReplyToPdf, printCleanReportHtml } from '../utils/pdfExport';
+import { TallyConfiguratorModal } from './TallyConfiguratorModal';
 import { WebSourcesPanel } from './WebSourcesPanel';
 
 interface SalesResponderViewProps {
@@ -71,6 +73,7 @@ interface SalesResponderViewProps {
   onClearIncomingMessage?: () => void;
   onReplyComplete: (reply: SalesReplyResult) => void;
   onOpenKnowledge: () => void;
+  onCreateCrmDeal?: (deal: Omit<CrmDeal, 'id' | 'createdAt'>) => void;
   onSendWebhookPayload?: (payload: Record<string, unknown>, label: string) => Promise<void>;
   onQuickAddTile?: (tile: { title: string; category: string; content: string }) => void;
   onLogAiCall: (entry: {
@@ -167,6 +170,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   onClearIncomingMessage,
   onReplyComplete,
   onOpenKnowledge,
+  onCreateCrmDeal,
   onSendWebhookPayload,
   onQuickAddTile,
   onLogAiCall,
@@ -198,6 +202,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   });
   const [selectedLinkIds, setSelectedLinkIds] = useState<string[]>([]);
   const [showQuickLinks, setShowQuickLinks] = useState<boolean>(false);
+  const [showTallyModal, setShowTallyModal] = useState<boolean>(false);
   const [newLinkLabel, setNewLinkLabel] = useState('');
   const [newLinkUrl, setNewLinkUrl] = useState('');
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
@@ -1080,6 +1085,16 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             >
               <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
               Obiekcje ({objections.length})
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowTallyModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-gradient-to-r from-indigo-50 to-amber-50 px-2.5 py-1.5 text-[11px] font-extrabold text-indigo-900 hover:brightness-95 transition shadow-2xs"
+              title="Użyj własnego konfiguratora wycen Tally (dWO4Oq) — wynik wpadnie od razu do bota, Skrzynki i CRM!"
+            >
+              <Calculator className="h-3.5 w-3.5 text-indigo-600" />
+              Konfigurator Tally
             </button>
           </div>
 
@@ -1971,6 +1986,18 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
           </div>
         )}
       </div>
+
+      <TallyConfiguratorModal
+        open={showTallyModal}
+        onClose={() => setShowTallyModal(false)}
+        presetName={preset.name}
+        onCreateDeal={onCreateCrmDeal}
+        onQuoteToResponder={(summaryText) => {
+          setClientMessage(summaryText);
+          setAdvisorNotes('Przygotuj profesjonalną ofertę na bazie wyliczeń z naszego Konfiguratora Tally.');
+          void refreshCloudInbox();
+        }}
+      />
     </div>
   );
 };

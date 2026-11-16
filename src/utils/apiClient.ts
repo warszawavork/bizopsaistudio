@@ -591,6 +591,22 @@ export async function deleteCloudInboxItem(id: string): Promise<{ success: boole
   return postJson('/api/integrations', { action: 'delete_inbox', id });
 }
 
+export async function syncTallyPricingToKnowledge(formUrlOrId = 'dWO4Oq'): Promise<{
+  success: boolean;
+  formId: string;
+  formName: string;
+  tilesCount: number;
+  tiles: Array<{
+    title: string;
+    category: string;
+    visibility: 'public' | 'internal';
+    priority: 'standard' | 'critical';
+    content: string;
+  }>;
+}> {
+  return postJson('/api/integrations', { action: 'sync_tally_knowledge', formUrl: formUrlOrId });
+}
+
 export async function fetchCloudWorkspace(
   presetId: string,
   signal?: AbortSignal,

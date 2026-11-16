@@ -40,6 +40,7 @@ import {
   runAutoDistillKnowledge,
   runKnowledgeConsistencyCheck,
   runSmartIngest,
+  syncTallyPricingToKnowledge,
 } from '../utils/apiClient';
 import {
   chunkBookOrLargeText,
@@ -212,6 +213,7 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
   const [readingProgress, setReadingProgress] = useState<{ label: string; percent: number } | null>(null);
   const [ingestProgress, setIngestProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [ingesting, setIngesting] = useState(false);
+  const [syncingTally, setSyncingTally] = useState(false);
   const [checkingConsistency, setCheckingConsistency] = useState(false);
   const [consistencyReport, setConsistencyReport] = useState<KnowledgeConsistencyResult | null>(null);
   const [showGraph, setShowGraph] = useState(false);
@@ -1230,7 +1232,34 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({
               </div>
             )}
 
-            <div className="flex justify-end">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                disabled={syncingTally || ingesting}
+                onClick={async () => {
+                  setSyncingTally(true);
+                  setIngestError(null);
+                  try {
+                    const res = await syncTallyPricingToKnowledge('dWO4Oq');
+                    setStagedTiles(res.tiles);
+                    setIngestSummary(
+                      `Pobrano na żywo cennik i parametry z „${res.formName}” (tally.so/r/${res.formId}) — ${res.tilesCount} uporządkowanych kafelków gotowych do zapisu!`
+                    );
+                  } catch (err) {
+                    setIngestError(
+                      err instanceof Error ? err.message : 'Nie udało się pobrać cennika z Tally.'
+                    );
+                  } finally {
+                    setSyncingTally(false);
+                  }
+                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-50 transition"
+                title="Pobierz automatycznie wszystkie stawki, pakiety i reguły z Twojego formularza https://tally.so/r/dWO4Oq do Bazy Wiedzy bota"
+              >
+                {syncingTally ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 text-amber-600" />}
+                Synchronizuj cennik z Tally (dWO4Oq)
+              </button>
+
               <button
                 type="button"
                 disabled={

@@ -943,6 +943,7 @@ export function App() {
               setReplyByPreset((prev) => ({ ...prev, [preset.id]: reply }))
             }
             onOpenKnowledge={() => setActiveTab('knowledge')}
+            onCreateCrmDeal={handleCreateCrmDeal}
             onSendWebhookPayload={handleSendWebhook}
             onQuickAddTile={(tile) => {
               const newTile: KnowledgeTile = {

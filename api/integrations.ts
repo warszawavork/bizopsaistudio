@@ -69,6 +69,265 @@ async function insertInboxItem(
   return id;
 }
 
+async function appendDealToCloudWorkspace(
+  sql: DbSql,
+  presetId: string,
+  deal: {
+    id: string;
+    title: string;
+    client: string;
+    valuePln: number;
+    stage: 'lead' | 'audited' | 'quote' | 'won';
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    score: number;
+    tags: string[];
+    notes: string;
+    createdAt: string;
+  }
+) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS bizops_workspace_state (
+      id TEXT PRIMARY KEY,
+      preset_id TEXT NOT NULL,
+      data_key TEXT NOT NULL,
+      payload JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      author_name TEXT DEFAULT 'Zespół'
+    );
+  `;
+  const rowId = `${presetId}:deals`;
+  const existing = await sql`
+    SELECT payload FROM bizops_workspace_state WHERE id = ${rowId} LIMIT 1;
+  `;
+  const currentDeals = Array.isArray(existing[0]?.payload)
+    ? (existing[0].payload as Array<Record<string, unknown>>)
+    : [];
+  const nextDeals = [deal, ...currentDeals.filter((d) => d.id !== deal.id)].slice(0, 100);
+
+  await sql`
+    INSERT INTO bizops_workspace_state (id, preset_id, data_key, payload, updated_at, author_name)
+    VALUES (${rowId}, ${presetId}, 'deals', ${JSON.stringify(nextDeals)}::jsonb, NOW(), 'Tally Webhook')
+    ON CONFLICT (id)
+    DO UPDATE SET
+      payload = EXCLUDED.payload,
+      updated_at = NOW(),
+      author_name = 'Tally Webhook';
+  `;
+}
+
+interface TallyFieldPayload {
+  key?: string;
+  label?: string;
+  type?: string;
+  value?: unknown;
+  options?: Array<{ id?: string; text?: string }>;
+}
+
+function resolveTallyFieldValue(field: TallyFieldPayload): string {
+  const val = field.value;
+  if (val === null || val === undefined || val === '') return '';
+  if (Array.isArray(val)) {
+    const opts = Array.isArray(field.options) ? field.options : [];
+    const mapped = val.map((item) => {
+      if (typeof item === 'string') {
+        const hit = opts.find((o) => o.id === item);
+        return hit?.text || item;
+      }
+      if (item && typeof item === 'object' && 'text' in item) {
+        return String((item as { text?: unknown }).text || '');
+      }
+      return String(item);
+    });
+    return mapped.filter(Boolean).join(', ');
+  }
+  if (typeof val === 'boolean') return val ? 'Tak' : 'Nie';
+  return String(val).trim();
+}
+
+function parseTallyWebhookSubmission(body: Record<string, unknown>) {
+  const data = (body.data || body) as {
+    formId?: string;
+    formName?: string;
+    submissionId?: string;
+    createdAt?: string;
+    fields?: TallyFieldPayload[];
+  };
+  const fields = Array.isArray(data.fields) ? data.fields : [];
+  let senderName = 'Klient Tally';
+  let email = '';
+  let phone = '';
+  let netPln = 0;
+  let grossPln = 0;
+  let areaM2 = '';
+  const summaryLines: string[] = [];
+
+  for (const f of fields) {
+    const label = String(f.label || f.key || 'Pole').trim();
+    const resolved = resolveTallyFieldValue(f);
+    if (!resolved) continue;
+
+    const lower = label.toLowerCase();
+    if (lower.includes('imię') || lower.includes('imie') || lower.includes('nazwisko') || lower === 'name') {
+      senderName = resolved;
+    } else if (lower.includes('mail')) {
+      email = resolved;
+    } else if (lower.includes('tel') || lower.includes('phone')) {
+      phone = resolved;
+    } else if (lower.includes('metraż') || lower.includes('metraz')) {
+      areaM2 = resolved;
+    } else if (lower.includes('brutto') || lower.includes('finalsumbrutto')) {
+      const n = Number(resolved.replace(/[^\d.,]/g, '').replace(',', '.'));
+      if (Number.isFinite(n) && n > 0) grossPln = Math.round(n);
+    } else if (lower.includes('multiplier') || lower.includes('netto')) {
+      const n = Number(resolved.replace(/[^\d.,]/g, '').replace(',', '.'));
+      if (Number.isFinite(n) && n > 1000 && !netPln) netPln = Math.round(n);
+    }
+
+    summaryLines.push(`• ${label}: ${resolved}`);
+  }
+
+  const formTitle = String(data.formName || `Konfigurator Tally (${data.formId || 'dWO4Oq'})`);
+  const senderContact = [email, phone].filter(Boolean).join(' • ');
+  const valuePln = grossPln || (netPln ? Math.round(netPln * 1.23) : 185000);
+  const fullText = [
+    `ZAPYTANIE Z KONFIGURATORA TALLY: ${formTitle}`,
+    senderContact ? `Kontakt: ${senderContact}` : '',
+    netPln ? `• Wyliczona kwota Netto: ${netPln.toLocaleString('pl-PL')} zł` : '',
+    grossPln ? `• Wyliczona kwota Brutto: ${grossPln.toLocaleString('pl-PL')} zł` : '',
+    '',
+    'Parametry konfiguracji klienta:',
+    ...summaryLines,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    formId: String(data.formId || 'dWO4Oq'),
+    formTitle,
+    submissionId: String(data.submissionId || `tally_${Date.now()}`),
+    senderName,
+    senderContact,
+    areaM2,
+    netPln,
+    grossPln,
+    valuePln,
+    fullText,
+  };
+}
+
+function buildTilesFromTallyHtml(html: string, formId: string) {
+  const match = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (!match) {
+    throw new Error('Nie znaleziono struktury __NEXT_DATA__ w formularzu Tally.');
+  }
+  const parsed = JSON.parse(match[1]) as {
+    props?: {
+      pageProps?: {
+        name?: string;
+        blocks?: Array<{
+          type?: string;
+          groupUuid?: string;
+          payload?: {
+            text?: string;
+            title?: string;
+            name?: string;
+            safeHTMLSchema?: Array<[string, ...unknown[]]>;
+            calculatedFields?: Array<{ name?: string; value?: number }>;
+          };
+        }>;
+      };
+    };
+  };
+
+  const pp = parsed.props?.pageProps;
+  const formName = pp?.name || `Konfigurator Tally (${formId})`;
+  const blocks = Array.isArray(pp?.blocks) ? pp.blocks : [];
+
+  const getBlockText = (b: (typeof blocks)[number]) => {
+    const p = b.payload;
+    if (!p) return '';
+    if (Array.isArray(p.safeHTMLSchema)) {
+      return p.safeHTMLSchema.map((seg) => (Array.isArray(seg) ? String(seg[0] || '') : '')).join('').trim();
+    }
+    return String(p.text || p.title || p.name || '').trim();
+  };
+
+  const calcLines: string[] = [];
+  const sectionMap: Array<{ section: string; items: string[] }> = [];
+  let currentSec: { section: string; items: string[] } = { section: 'Parametry podstawowe', items: [] };
+
+  for (const b of blocks) {
+    const t = b.type || '';
+    if (t === 'CALCULATED_FIELDS' && Array.isArray(b.payload?.calculatedFields)) {
+      for (const cf of b.payload.calculatedFields) {
+        if (cf.name && typeof cf.value === 'number' && cf.value > 0) {
+          calcLines.push(`• ${cf.name}: ${cf.value.toLocaleString('pl-PL')} PLN`);
+        }
+      }
+      continue;
+    }
+
+    const txt = getBlockText(b).replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
+    if (!txt || txt.includes('Netto: @multiplier') || txt.includes('qqqqq')) continue;
+
+    if (t === 'PAGE_BREAK') {
+      if (currentSec.items.length > 0) sectionMap.push(currentSec);
+      currentSec = { section: txt, items: [] };
+    } else if (t === 'TITLE') {
+      currentSec.items.push(`\n[${txt}]`);
+    } else if (t === 'MULTIPLE_CHOICE_OPTION' || t === 'TEXT') {
+      if (currentSec.items.length < 40) {
+        currentSec.items.push(`• ${txt}`);
+      }
+    }
+  }
+  if (currentSec.items.length > 0) sectionMap.push(currentSec);
+
+  const tiles: Array<{
+    title: string;
+    category: string;
+    visibility: 'public' | 'internal';
+    priority: 'standard' | 'critical';
+    content: string;
+  }> = [];
+
+  if (calcLines.length > 0) {
+    tiles.push({
+      title: `Cennik Kalkulatora Tally (${formId}): Stawki bazowe i dodatki`,
+      category: 'Cennik',
+      visibility: 'public',
+      priority: 'critical',
+      content: [
+        `Oficjalne stawki netto pobrane bezpośrednio z konfiguratora "${formName}" (https://tally.so/r/${formId}):`,
+        ...calcLines,
+        '• Kondygnacje: Parter = ×1.0, Poddasze użytkowe = ×1.5, Piętro pełnowymiarowe = ×2.0.',
+        '• VAT: w konfiguratorze domyślnie brutto = netto × 1.23 (23% VAT); dla budynków mieszkalnych całorocznych osoby fizycznej do 300 m² możliwa stawka 8% VAT.',
+      ].join('\n'),
+    });
+  }
+
+  for (const sec of sectionMap) {
+    const cleanItems = sec.items.filter(Boolean).join('\n').trim();
+    if (cleanItems.length < 30) continue;
+    if (/wstęp|finalizacja/i.test(sec.section)) continue;
+    tiles.push({
+      title: `Tally (${formId}) — ${sec.section}`,
+      category: /fundament|ogrzew|dach|ociepl|techn/i.test(sec.section)
+        ? 'Technologia'
+        : /dostawa/i.test(sec.section)
+          ? 'Logistyka'
+          : /finans/i.test(sec.section)
+            ? 'Finanse & VAT'
+            : 'Oferta',
+      visibility: 'public',
+      priority: 'standard',
+      content: cleanItems.slice(0, 1800),
+    });
+  }
+
+  return { formName, tiles };
+}
+
 function extractMetaWebhookMessages(body: Record<string, unknown>): Array<{
   source: 'whatsapp' | 'meta';
   senderName: string;
@@ -252,9 +511,87 @@ export default async function handler(
     return;
   }
 
+  // Incoming Tally Webhook event (FORM_RESPONSE) -> save to Cloud Inbox + create CRM Deal automatically
+  if (
+    body.eventType === 'FORM_RESPONSE' ||
+    (body.data && typeof body.data === 'object' && Array.isArray((body.data as Record<string, unknown>).fields))
+  ) {
+    try {
+      const urlObj = new URL(req.url || '/', 'http://localhost');
+      const presetId = String(req.query?.presetId ?? urlObj.searchParams.get('presetId') ?? 'norvil');
+      const parsed = parseTallyWebhookSubmission(body);
+      const sql = getDb();
+
+      const inboxId = await insertInboxItem(sql, {
+        id: `tally_${parsed.submissionId}`,
+        source: 'tally',
+        senderName: parsed.senderName,
+        senderContact: parsed.senderContact,
+        fullText: parsed.fullText,
+      });
+
+      await appendDealToCloudWorkspace(sql, presetId, {
+        id: `deal_tally_${parsed.submissionId}`,
+        title: parsed.areaM2
+          ? `Wycena Tally ${parsed.areaM2} m² — ${parsed.senderName}`
+          : `Konfiguracja Tally (${parsed.formId})`,
+        client: parsed.senderName,
+        valuePln: parsed.valuePln,
+        stage: 'quote',
+        riskLevel: 'LOW',
+        score: 92,
+        tags: ['Tally CPQ', parsed.formId, parsed.areaM2 ? `${parsed.areaM2} m²` : 'Konfigurator'],
+        notes: parsed.fullText.slice(0, 1400),
+        createdAt: new Date().toISOString().slice(0, 10),
+      });
+
+      sendJson(res, 200, {
+        success: true,
+        source: 'tally',
+        inboxId,
+        presetId,
+        client: parsed.senderName,
+        valuePln: parsed.valuePln,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Błąd zapisu zgłoszenia Tally.';
+      sendJson(res, 500, { error: msg });
+    }
+    return;
+  }
+
   const action = String(body.action || '');
 
   try {
+    if (action === 'sync_tally_knowledge') {
+      const rawInput = String(body.formUrl || body.formId || 'dWO4Oq').trim();
+      const urlMatch = rawInput.match(/tally\.so\/(?:r|embed)\/([A-Za-z0-9_-]{4,24})/i);
+      const formId = urlMatch ? urlMatch[1] : rawInput.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || 'dWO4Oq';
+      if (!/^[A-Za-z0-9_-]{4,24}$/.test(formId)) {
+        sendJson(res, 400, { error: 'Podaj poprawny identyfikator lub link Tally (np. https://tally.so/r/dWO4Oq).' });
+        return;
+      }
+
+      const pageRes = await fetch(`https://tally.so/r/${encodeURIComponent(formId)}`, {
+        headers: { 'User-Agent': 'BizOpsAIStudio/1.0 (+tally-sync)' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!pageRes.ok) {
+        sendJson(res, 400, { error: `Nie udało się pobrać formularza Tally (${pageRes.status}).` });
+        return;
+      }
+      const html = await pageRes.text();
+      const { formName, tiles } = buildTilesFromTallyHtml(html, formId);
+      sendJson(res, 200, {
+        success: true,
+        formId,
+        formName,
+        tilesCount: tiles.length,
+        tiles,
+      });
+      return;
+    }
+
     if (action === 'ingest_inbox' || (!action && (body.message || body.fullText || body.text))) {
       const rawText = String(body.fullText || body.message || body.text || '').trim();
       if (!rawText) {
