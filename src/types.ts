@@ -34,6 +34,53 @@ export interface AdvisorSignature {
   companyLine: string;
 }
 
+export interface TallyQuoteInput {
+  areaM2: number | null;
+  areaIsTotalUsable?: boolean;
+  standard: 'deweloperski' | 'norvil' | null;
+  insulation: 'letniskowy' | 'caloroczny' | null;
+  floorType: 'parter' | 'poddasze' | 'pietro' | null;
+  foundation: 'brak' | 'slupy' | 'lawy' | 'plyta' | null;
+  architectPkg: 'none' | 'letniskowy' | 'mieszkalny_70' | 'mieszkalny_120' | 'premium' | null;
+  underfloorHeating: boolean | null;
+  heatersCount: number;
+  acCount: number;
+  bathroom: 'none' | 'podstawowy' | 'premium' | null;
+  coveredTerraceM2: number;
+  openTerraceM2: number;
+  deliveryKm: number;
+  deliveryModules: number;
+  kitchenPkg: 'none' | 'umeblowanie' | 'kuchnia' | 'kuchnia_meble' | null;
+  fireplace: 'none' | 'przygotowanie' | 'koza' | null;
+  roofAngleMpzp: boolean | null;
+  vatRate: 8 | 23;
+}
+
+export interface TallyQuoteBreakdownItem {
+  key: string;
+  label: string;
+  formula: string;
+  netPln: number;
+  isDefaultAssumed?: boolean;
+}
+
+export interface TallyQuoteEvaluation {
+  formId: string;
+  formName: string;
+  liveFetched: boolean;
+  evaluatedAt: string;
+  input: TallyQuoteInput;
+  breakdown: TallyQuoteBreakdownItem[];
+  totalNetPln: number;
+  vatRate: 8 | 23;
+  vatPln: number;
+  totalGrossPln: number;
+  altVatGross8Pln: number;
+  altVatGross23Pln: number;
+  missingQuestions: string[];
+  formattedQuoteBlock: string;
+}
+
 export interface SalesReplyResult {
   subject: string;
   replyBody: string;
@@ -55,6 +102,7 @@ export interface SalesReplyResult {
     summary: string;
     detectedObjections: string[];
   };
+  tallyQuote?: TallyQuoteEvaluation;
   estimatedTimeSavedMinutes: number;
   latencyMs: number;
   model: string;

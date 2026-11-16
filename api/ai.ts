@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getLiveTallyCpqContext } from './_tally';
+import type { TallyQuoteEvaluation, TallyQuoteInput } from '../src/types';
+import { evaluateTallyQuote, getLiveTallyCpqContext } from './_tally';
 
 interface KnowledgeTileInput {
   id: string;
@@ -703,6 +704,98 @@ async function fetchLiveWebContext(
   return { summary: '', sources: [], searchQueries: [] };
 }
 
+async function extractTallyParamsFromConversation(
+  apiKey: string,
+  threadHistory: Array<{ role?: string; text?: string }>,
+  clientMessage: string,
+  advisorNotes: string
+): Promise<{
+  input: Partial<TallyQuoteInput>;
+  usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
+}> {
+  const transcript = [
+    ...threadHistory.map((t, i) => `${i + 1}. [${t.role === 'advisor' ? 'DORADCA' : 'KLIENT'}]: ${t.text}`),
+    clientMessage ? `NAJNOWSZE [KLIENT]: ${clientMessage}` : '',
+    advisorNotes ? `WYTYCZNA DORADCY: ${advisorNotes}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const prompt = [
+    'Przeanalizuj poniższą rozmowę z klientem i wyciągnij wszystkie dotychczasowe ustalenia pasujące do konfiguratora domu NORVIL (Tally dWO4Oq).',
+    'Jeśli klient czegoś NIE określił ani nie potwierdził w żadnej wiadomości, ustaw "unknown" (lub 0 dla liczb) — NIE ZGADUJ!',
+    'UWAGA na metraż (areaM2): jeśli klient pisze np. „dom piętrowy 100m2 pow. użytkowej” ustaw areaIsTotalUsable=true; jeśli podaje powierzchnię zabudowy podstawy np. „podstawa 50m2 piętrowy” lub „parter 50m2”, ustaw areaIsTotalUsable=false.',
+    'Jeśli podano miasto dostawy (np. Warszawa -> 600 km z Przemyśla, Kraków -> 240 km, Wrocław -> 510 km, Gdańsk -> 820 km, Katowice -> 320 km), wpisz przybliżoną odległość w km z Przemyśla w deliveryKm.',
+    '',
+    transcript,
+  ].join('\n');
+
+  const res = await callGemini(apiKey, {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          areaM2: { type: 'NUMBER' },
+          areaIsTotalUsable: { type: 'BOOLEAN' },
+          standard: { type: 'STRING', enum: ['unknown', 'deweloperski', 'norvil'] },
+          insulation: { type: 'STRING', enum: ['unknown', 'letniskowy', 'caloroczny'] },
+          floorType: { type: 'STRING', enum: ['unknown', 'parter', 'poddasze', 'pietro'] },
+          foundation: { type: 'STRING', enum: ['unknown', 'brak', 'slupy', 'lawy', 'plyta'] },
+          architectPkg: {
+            type: 'STRING',
+            enum: ['unknown', 'none', 'letniskowy', 'mieszkalny_70', 'mieszkalny_120', 'premium'],
+          },
+          underfloorHeating: { type: 'STRING', enum: ['unknown', 'tak', 'nie'] },
+          heatersCount: { type: 'INTEGER' },
+          acCount: { type: 'INTEGER' },
+          bathroom: { type: 'STRING', enum: ['unknown', 'none', 'podstawowy', 'premium'] },
+          coveredTerraceM2: { type: 'NUMBER' },
+          openTerraceM2: { type: 'NUMBER' },
+          deliveryKm: { type: 'NUMBER' },
+          deliveryModules: { type: 'INTEGER' },
+          kitchenPkg: { type: 'STRING', enum: ['unknown', 'none', 'umeblowanie', 'kuchnia', 'kuchnia_meble'] },
+          fireplace: { type: 'STRING', enum: ['unknown', 'none', 'przygotowanie', 'koza'] },
+          roofAngleMpzp: { type: 'STRING', enum: ['unknown', 'tak', 'nie'] },
+          vatRate: { type: 'INTEGER', enum: [8, 23] },
+        },
+        required: ['areaM2', 'standard', 'insulation', 'floorType', 'foundation'],
+      },
+    },
+  });
+
+  const raw = parseGeminiJson<Record<string, unknown>>(res.text);
+  const opt = <T extends string>(val: unknown): T | null =>
+    typeof val === 'string' && val !== 'unknown' ? (val as T) : null;
+
+  const input: Partial<TallyQuoteInput> = {
+    areaM2: typeof raw.areaM2 === 'number' && raw.areaM2 > 0 ? raw.areaM2 : null,
+    areaIsTotalUsable: Boolean(raw.areaIsTotalUsable),
+    standard: opt<'deweloperski' | 'norvil'>(raw.standard),
+    insulation: opt<'letniskowy' | 'caloroczny'>(raw.insulation),
+    floorType: opt<'parter' | 'poddasze' | 'pietro'>(raw.floorType),
+    foundation: opt<'brak' | 'slupy' | 'lawy' | 'plyta'>(raw.foundation),
+    architectPkg: opt<'none' | 'letniskowy' | 'mieszkalny_70' | 'mieszkalny_120' | 'premium'>(raw.architectPkg),
+    underfloorHeating:
+      raw.underfloorHeating === 'tak' ? true : raw.underfloorHeating === 'nie' ? false : null,
+    heatersCount: typeof raw.heatersCount === 'number' ? raw.heatersCount : 0,
+    acCount: typeof raw.acCount === 'number' ? raw.acCount : 0,
+    bathroom: opt<'none' | 'podstawowy' | 'premium'>(raw.bathroom),
+    coveredTerraceM2: typeof raw.coveredTerraceM2 === 'number' ? raw.coveredTerraceM2 : 0,
+    openTerraceM2: typeof raw.openTerraceM2 === 'number' ? raw.openTerraceM2 : 0,
+    deliveryKm: typeof raw.deliveryKm === 'number' ? raw.deliveryKm : 0,
+    deliveryModules: typeof raw.deliveryModules === 'number' ? raw.deliveryModules : 0,
+    kitchenPkg: opt<'none' | 'umeblowanie' | 'kuchnia' | 'kuchnia_meble'>(raw.kitchenPkg),
+    fireplace: opt<'none' | 'przygotowanie' | 'koza'>(raw.fireplace),
+    roofAngleMpzp: raw.roofAngleMpzp === 'tak' ? true : raw.roofAngleMpzp === 'nie' ? false : null,
+    vatRate: raw.vatRate === 23 ? 23 : 8,
+  };
+
+  return { input, usage: res.usage };
+}
+
 export default async function handler(req: IncomingMessage & { body?: unknown }, res: ServerResponse): Promise<void> {
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
@@ -1111,6 +1204,36 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       return;
     }
 
+    if (action === 'tally_extract_and_quote') {
+      const clientMessage = String(body.clientMessage || '').trim();
+      const advisorNotes = String(body.advisorNotes || '').trim();
+      const threadHistory = Array.isArray(body.threadHistory)
+        ? (body.threadHistory as Array<{ role?: string; text?: string }>).filter((t) => t && t.text)
+        : [];
+      const tallyFormId = String(body.tallyFormId || 'dWO4Oq');
+
+      if (!clientMessage && threadHistory.length === 0) {
+        sendJson(res, 400, { error: 'Wklej treść wiadomości lub wybierz czat z historią rozmowy.' });
+        return;
+      }
+
+      const extraction = await extractTallyParamsFromConversation(
+        apiKey,
+        threadHistory,
+        clientMessage,
+        advisorNotes
+      );
+      const quote = await evaluateTallyQuote(extraction.input, tallyFormId, true);
+
+      sendJson(res, 200, {
+        success: true,
+        quote,
+        usage: extraction.usage,
+        latencyMs: Date.now() - startedAt,
+      });
+      return;
+    }
+
     if (action === 'reply_assistant') {
       const companyName = String(body.companyName || 'Firma');
       const companyIndustry = String(body.companyIndustry || 'Operacje B2B');
@@ -1145,6 +1268,10 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
 
       const useTallyConfig = body.useTallyConfig !== false;
       const tallyFormId = String(body.tallyFormId || 'dWO4Oq');
+      const lockedTallyQuote =
+        body.lockedTallyQuote && typeof body.lockedTallyQuote === 'object'
+          ? (body.lockedTallyQuote as TallyQuoteEvaluation)
+          : null;
 
       const { contextText: knowledgeContext, stats: contextStats } = compileSmartKnowledgeContext(
         tiles,
@@ -1152,14 +1279,28 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         `${clientMessage} ${advisorNotes}`,
         8
       );
-      const [liveWeb, liveTally] = await Promise.all([
+      const convoForQuote = `${threadHistory.map((t) => t.text).join(' ')} ${clientMessage} ${advisorNotes}`;
+      const shouldAutoRunTallyEngine =
+        !lockedTallyQuote &&
+        useTallyConfig &&
+        includeMiniQuote &&
+        /(dom|metr|m2|m²|wycen|cen|koszt|fundament|piętr|pietr|parter|poddasz|kominek|łazienk|lazienk|kuchni|taras|dewelopersk|norvil|dostaw|tally|budżet|budzet|kwot|pln|zł)/i.test(
+          convoForQuote
+        );
+
+      const [liveWeb, liveTally, autoExtracted] = await Promise.all([
         useWebKnowledge
           ? fetchLiveWebContext(apiKey, companyIndustry, clientMessage)
           : Promise.resolve({ summary: '', sources: [], searchQueries: [] }),
-        useTallyConfig
-          ? getLiveTallyCpqContext(tallyFormId)
+        useTallyConfig ? getLiveTallyCpqContext(tallyFormId) : Promise.resolve(null),
+        shouldAutoRunTallyEngine
+          ? extractTallyParamsFromConversation(apiKey, threadHistory, clientMessage, advisorNotes).catch(() => null)
           : Promise.resolve(null),
       ]);
+
+      const activeTallyQuote: TallyQuoteEvaluation | null =
+        lockedTallyQuote ||
+        (autoExtracted ? await evaluateTallyQuote(autoExtracted.input, tallyFormId, false) : null);
 
       const replyLangInstruction =
         replyLanguage === 'pl'
@@ -1213,17 +1354,26 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           ? `PODPIS DORADCY: Zakończ treść maila (replyBody) dokładnie poniższym podpisem:\n${signatureLines}`
           : '',
         includeMiniQuote
-          ? [
-              'MINI-KALKULACJA I ŚMIAŁE WYCENIANIE Z KONFIGURATORA TALLY (dWO4Oq) — STANDARD EXECUTIVE:',
-              'Jeśli klient pyta o cenę, budżet, wycenę domu (parterowy ×1.0, z poddaszem ×1.5, piętrowy ×2.0), fundamenty (słupy 350 / ławy 600 / płyta 750), standard Deweloperski vs NORVIL lub dodatki — ŚMIAŁO korzystaj z sekcji OFICJALNY LIVE CENNIK Z KONFIGURATORA TALLY poniżej i samodzielnie policz orientacyjny kosztorys krok po kroku:',
-              '• Wariant / Typ bryły i metraż (wyraźnie rozpisz: podstawa m² × mnożnik kondygnacji × stawka/m²): ... PLN netto',
-              '• Fundamenty (wybrany wariant słupy/ławy/płyta lub alternatywa): ... PLN netto',
-              '• Opcje dodatkowe (architekt, ogrzewanie, łazienka, kuchnia, dach MPZP, transport z Przemyśla): ... PLN',
-              '• Razem NETTO: ... PLN',
-              '• Stawka VAT (8% Mieszkaniowy całoroczny do 300 m² lub 23% Rekreacyjny/B2B — w razie wątpliwości podaj oba warianty): ... PLN',
-              '• Szacowana wartość BRUTTO: ... PLN',
-              '• Adnotacja: wycena ma charakter orientacyjny wg kalkulatora i wymaga finalnego potwierdzenia geotechnicznego oraz technicznego.',
-            ].join('\n')
+          ? activeTallyQuote && activeTallyQuote.breakdown.length > 0
+            ? [
+                'OBOWIĄZKOWY JAWNY KOSZTORYS WYLICZONY PRZEZ SILNIK TALLY (dWO4Oq) — NIE UKRYWAJ CEN ANI NIE ZMIENIAJ TYCH LICZB:',
+                'Została wykonana kalkulacja na żywo z oficjalnego konfiguratora Tally na bazie dotychczasowych ustaleń klienta.',
+                'W treści wiadomości (replyBody) JAWNIE i CZYTELNIE wypisz w osobnych punktorach każdą pozycję z poniższej wyceny (np. `• Dom ...: 315 000 zł netto`, `• Łazienka: 14 000 zł netto`, `• Kominek: 9 500 zł netto`), podsumuj NETTO, VAT i BRUTTO, a na końcu grzecznie zapytaj o brakujące pozycje z poniższej listy Tally:',
+                '',
+                activeTallyQuote.formattedQuoteBlock,
+                activeTallyQuote.missingQuestions.length > 0
+                  ? `\nBRAKUJĄCE PYTANIA Z KONFIGURATORA TALLY (warto dopytać klienta, żeby doprecyzować kosztorys):\n${activeTallyQuote.missingQuestions.map((q) => `- ${q}`).join('\n')}`
+                  : '',
+              ].join('\n')
+            : [
+                'MINI-KALKULACJA I ŚMIAŁE WYCENIANIE Z KONFIGURATORA TALLY (dWO4Oq) — STANDARD EXECUTIVE:',
+                'Jeśli klient pyta o cenę, budżet, wycenę domu (parterowy ×1.0, z poddaszem ×1.5, piętrowy ×2.0), fundamenty (słupy 350 / ławy 600 / płyta 750), standard Deweloperski vs NORVIL lub dodatki — ŚMIAŁO korzystaj z sekcji OFICJALNY LIVE CENNIK Z KONFIGURATORA TALLY poniżej i JAWNIE wypunktuj każdą pozycję osobno (dom + fundament + łazienka + kominek + transport + NETTO + VAT + BRUTTO):',
+                activeTallyQuote && activeTallyQuote.missingQuestions.length > 0
+                  ? `• Brakujące dane do wyceny w Tally: ${activeTallyQuote.missingQuestions.slice(0, 5).join('; ')}`
+                  : '',
+              ]
+                .filter(Boolean)
+                .join('\n')
           : '',
         includedLinks.length > 0
           ? `LINKI DO MATERIAŁÓW: Wpleć naturalnie w treść odpowiedzi (replyBody) następujące linki dla klienta:\n${includedLinks.map((l) => `- ${l.label}: ${l.url}`).join('\n')}`
@@ -1309,6 +1459,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       }
       sendJson(res, 200, {
         ...parsed,
+        tallyQuote: activeTallyQuote || undefined,
         webSources: liveWeb.sources,
         searchQueries: liveWeb.searchQueries,
         contextStats,

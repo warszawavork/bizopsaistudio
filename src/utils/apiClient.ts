@@ -10,6 +10,7 @@ import type {
   KnowledgeConsistencyResult,
   KnowledgeTile,
   SalesReplyResult,
+  TallyQuoteEvaluation,
   WebSource,
   WebhookSendResult,
   WorkflowRunResult,
@@ -321,6 +322,7 @@ export async function generateSalesReply(params: {
   useWebKnowledge: boolean;
   useTallyConfig?: boolean;
   tallyFormId?: string;
+  lockedTallyQuote?: TallyQuoteEvaluation | null;
   includeMiniQuote?: boolean;
   includedLinks?: Array<{ label: string; url: string }>;
   threadHistory?: Array<{ role: 'client' | 'advisor'; text: string }>;
@@ -328,6 +330,20 @@ export async function generateSalesReply(params: {
   followUpDaysSilent?: number;
 }): Promise<SalesReplyResult> {
   return postJson('/api/ai', { action: 'reply_assistant', ...params });
+}
+
+export async function extractAndEvaluateTallyQuote(params: {
+  clientMessage: string;
+  advisorNotes?: string;
+  threadHistory?: Array<{ role: 'client' | 'advisor'; text: string }>;
+  tallyFormId?: string;
+}): Promise<{
+  success: boolean;
+  quote: TallyQuoteEvaluation;
+  latencyMs: number;
+  usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
+}> {
+  return postJson('/api/ai', { action: 'tally_extract_and_quote', ...params });
 }
 
 export async function translateSalesReply(params: {

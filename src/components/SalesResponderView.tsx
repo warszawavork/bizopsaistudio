@@ -33,6 +33,7 @@ import {
   Trash2,
   Webhook,
   X,
+  Zap,
 } from 'lucide-react';
 import type {
   AppLanguage,
@@ -46,10 +47,12 @@ import type {
   QuickLinkItem,
   ReplyHistoryItem,
   SalesReplyResult,
+  TallyQuoteEvaluation,
   WebSource,
 } from '../types';
 import {
   deleteCloudInboxItem,
+  extractAndEvaluateTallyQuote,
   fetchCloudInbox,
   fetchCloudWorkspace,
   generateSalesReply,
@@ -283,6 +286,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   });
   const [showChatsSidebar, setShowChatsSidebar] = useState<boolean>(true);
   const [savingChatsCloud, setSavingChatsCloud] = useState<boolean>(false);
+  const [integratedTallyQuote, setIntegratedTallyQuote] = useState<TallyQuoteEvaluation | null>(null);
+  const [integratingTally, setIntegratingTally] = useState<boolean>(false);
 
   const activeChat = chatThreads.find((c) => c.id === activeChatId) ?? null;
 
@@ -580,6 +585,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         channel: channelToUse,
         replyLanguage: langToUse,
         useWebKnowledge,
+        useTallyConfig: includeMiniQuote,
+        lockedTallyQuote: includeMiniQuote ? integratedTallyQuote : null,
         includeMiniQuote,
         includedLinks,
         threadHistory: effectiveThread,
@@ -588,6 +595,9 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       });
 
       const formattedBody = formatStructuredReplyText(result.replyBody);
+      if (result.tallyQuote && !integratedTallyQuote) {
+        setIntegratedTallyQuote(result.tallyQuote);
+      }
       onReplyComplete(result);
       setEditableSubject(result.subject);
       setEditableBody(formattedBody);
@@ -823,6 +833,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     selectActiveChatId(chatId);
     setClientMessage('');
     setAdvisorNotes('');
+    setIntegratedTallyQuote(null);
     setThreadHistory(found.messages.map((m) => ({ role: m.role, text: m.text })));
     const lastReplyMsg = [...found.messages].reverse().find((m) => m.role === 'advisor' && m.reply);
     if (lastReplyMsg?.reply) {
@@ -848,6 +859,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     selectActiveChatId(id);
     setClientMessage('');
     setAdvisorNotes('');
+    setIntegratedTallyQuote(null);
     setThreadHistory([]);
     setChannelStatus('Utworzono nowy czat klienta — wklej pierwszą wiadomość.');
   };
@@ -898,6 +910,94 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       setThreadHistory((updated?.messages || []).map((m) => ({ role: m.role, text: m.text })));
     }
     setChannelStatus('Usunięto wybraną wiadomość z kontekstu tego czatu.');
+  };
+
+  const rebuildFormattedBlock = (q: TallyQuoteEvaluation, nextBreakdown = q.breakdown, nextVatRate = q.vatRate): TallyQuoteEvaluation => {
+    const totalNetPln = nextBreakdown.reduce((s, b) => s + b.netPln, 0);
+    const vatPln = Math.round((totalNetPln * nextVatRate) / 100);
+    const totalGrossPln = totalNetPln + vatPln;
+    const altVatGross8Pln = Math.round(totalNetPln * 1.08);
+    const altVatGross23Pln = Math.round(totalNetPln * 1.23);
+    const formattedQuoteBlock = [
+      `KOSZTORYS WYLICZONY PRZEZ SILNIK TALLY (${q.formId}: "${q.formName}"):`,
+      ...nextBreakdown.map((b) => `• ${b.label}: ${b.netPln.toLocaleString('pl-PL')} zł netto (${b.formula})`),
+      `• RAZEM NETTO: ${totalNetPln.toLocaleString('pl-PL')} zł`,
+      `• Podatek VAT (${nextVatRate}%): ${vatPln.toLocaleString('pl-PL')} zł`,
+      `• RAZEM BRUTTO (${nextVatRate}% VAT): ${totalGrossPln.toLocaleString('pl-PL')} zł`,
+    ].join('\n');
+    return {
+      ...q,
+      breakdown: nextBreakdown,
+      totalNetPln,
+      vatRate: nextVatRate,
+      vatPln,
+      totalGrossPln,
+      altVatGross8Pln,
+      altVatGross23Pln,
+      formattedQuoteBlock,
+    };
+  };
+
+  const handleIntegrateTallyQuote = async () => {
+    const baseThread = activeChat
+      ? activeChat.messages.map((m) => ({ role: m.role, text: m.text }))
+      : threadHistory;
+    if (!clientMessage.trim() && baseThread.length === 0) return;
+
+    setIntegratingTally(true);
+    setError(null);
+    try {
+      const res = await extractAndEvaluateTallyQuote({
+        clientMessage: clientMessage.trim(),
+        advisorNotes: advisorNotes.trim(),
+        threadHistory: baseThread,
+        tallyFormId: 'dWO4Oq',
+      });
+      setIntegratedTallyQuote(res.quote);
+      setIncludeMiniQuote(true);
+      onLogAiCall({
+        action: 'responder',
+        latencyMs: res.latencyMs,
+        promptTokens: res.usage.promptTokens,
+        candidatesTokens: res.usage.candidatesTokens,
+        totalTokens: res.usage.totalTokens,
+        status: 'success',
+        summary: `Kalkulator Tally Engine (${res.quote.breakdown.length} poz., ${res.quote.totalGrossPln.toLocaleString('pl-PL')} zł brutto)`,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Nie udało się pobrać wyceny z silnika Tally.');
+    } finally {
+      setIntegratingTally(false);
+    }
+  };
+
+  const handleRemoveIntegratedItem = (key: string) => {
+    if (!integratedTallyQuote) return;
+    const filtered = integratedTallyQuote.breakdown.filter((b) => b.key !== key);
+    setIntegratedTallyQuote(rebuildFormattedBlock(integratedTallyQuote, filtered));
+  };
+
+  const handleSwitchIntegratedVat = (rate: 8 | 23) => {
+    if (!integratedTallyQuote) return;
+    setIntegratedTallyQuote(rebuildFormattedBlock(integratedTallyQuote, integratedTallyQuote.breakdown, rate));
+  };
+
+  const handleCreateDealFromIntegratedQuote = () => {
+    if (!integratedTallyQuote || !onCreateCrmDeal) return;
+    const label = activeChat?.clientName || 'Klient Tally';
+    onCreateCrmDeal({
+      title: integratedTallyQuote.input.areaM2
+        ? `Wycena Tally ${integratedTallyQuote.input.areaM2} m² — ${label}`
+        : `Wycena Tally Engine — ${label}`,
+      client: label,
+      valuePln: integratedTallyQuote.totalGrossPln || integratedTallyQuote.totalNetPln || 150000,
+      stage: 'quote',
+      riskLevel: 'LOW',
+      score: 90,
+      tags: ['Tally Engine dWO4Oq', integratedTallyQuote.input.floorType || 'konfiguracja'],
+      notes: integratedTallyQuote.formattedQuoteBlock,
+    });
+    setChannelStatus('Dodano wycenę z silnika Tally bezpośrednio do Lejka CRM!');
   };
 
   const handleContinueThread = () => {
@@ -1760,6 +1860,133 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             </div>
           )}
 
+          {/* Pre-Flight: Zintegruj wycenę z konfiguratora Tally na bazie czatu */}
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              disabled={integratingTally || loading || (!clientMessage.trim() && (!activeChat || activeChat.messages.length === 0))}
+              onClick={() => void handleIntegrateTallyQuote()}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-amber-400/80 bg-gradient-to-r from-amber-50 via-white to-indigo-50 px-4 py-2.5 text-xs font-extrabold text-slate-900 shadow-2xs transition hover:border-amber-500 hover:shadow-sm disabled:opacity-45"
+              title="Pobiera na żywo cennik z Twojego Tally (dWO4Oq), wyciąga parametry z rozmowy i wylicza dokładny kosztorys pozycja po pozycji przed napisaniem odpowiedzi"
+            >
+              {integratingTally ? (
+                <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
+              ) : (
+                <Zap className="h-4 w-4 text-amber-500" />
+              )}
+              {integratingTally
+                ? 'Łączę z Tally (dWO4Oq) i liczę pozycja po pozycji...'
+                : integratedTallyQuote
+                  ? 'Odśwież wycenę Tally z rozmowy (dWO4Oq)'
+                  : 'Zintegruj wycenę Tally z rozmowy (dWO4Oq)'}
+            </button>
+
+            {integratedTallyQuote && (
+              <div className="rounded-2xl border border-emerald-300/90 bg-emerald-50/60 p-3.5 space-y-2.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="rounded-md bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-white">
+                      {integratedTallyQuote.liveFetched ? 'Tally LIVE' : 'Tally Cache'}
+                    </span>
+                    <span className="font-extrabold text-emerald-950 text-[11px]">
+                      Kosztorys ({integratedTallyQuote.breakdown.length} poz.)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {([8, 23] as const).map((rate) => (
+                      <button
+                        key={rate}
+                        type="button"
+                        onClick={() => handleSwitchIntegratedVat(rate)}
+                        className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold transition ${
+                          integratedTallyQuote.vatRate === rate
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        VAT {rate}%
+                      </button>
+                    ))}
+                    {onCreateCrmDeal && (
+                      <button
+                        type="button"
+                        onClick={handleCreateDealFromIntegratedQuote}
+                        className="rounded-md bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-indigo-700"
+                        title="Zapisz tę wycenę od razu w Lejku CRM"
+                      >
+                        + CRM
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIntegratedTallyQuote(null)}
+                      className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                      title="Odepnij kalkulację"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {integratedTallyQuote.breakdown.length === 0 ? (
+                  <p className="text-[11px] text-amber-800">
+                    Klient nie podał jeszcze metrażu ani wybranych opcji — bot dopyta o szczegóły z Tally poniżej.
+                  </p>
+                ) : (
+                  <div className="space-y-1 max-h-48 overflow-y-auto pr-0.5">
+                    {integratedTallyQuote.breakdown.map((item) => (
+                      <div
+                        key={item.key}
+                        className="flex items-start justify-between gap-2 rounded-xl border border-emerald-200/80 bg-white px-2.5 py-1.5"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold text-slate-900">
+                            {item.label}
+                            {item.isDefaultAssumed && (
+                              <span className="ml-1 text-[9px] font-semibold text-amber-600">(orient.)</span>
+                            )}
+                          </p>
+                          <p className="text-[10px] text-slate-500">{item.formula}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <span className="text-[11px] font-extrabold text-emerald-800 whitespace-nowrap">
+                            {item.netPln.toLocaleString('pl-PL')} zł
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveIntegratedItem(item.key)}
+                            className="rounded p-0.5 text-slate-300 hover:text-rose-600"
+                            title="Usuń tę pozycję z kosztorysu"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-emerald-200 pt-2 text-[11px]">
+                  <span className="font-semibold text-slate-700">
+                    Netto: <strong className="text-slate-950">{integratedTallyQuote.totalNetPln.toLocaleString('pl-PL')} zł</strong>
+                  </span>
+                  <span className="font-extrabold text-emerald-900">
+                    Brutto ({integratedTallyQuote.vatRate}%): {integratedTallyQuote.totalGrossPln.toLocaleString('pl-PL')} zł
+                  </span>
+                </div>
+
+                {integratedTallyQuote.missingQuestions.length > 0 && (
+                  <div className="rounded-xl border border-amber-200/80 bg-amber-50/80 px-2.5 py-1.5 text-[10px] text-amber-900">
+                    <p className="font-bold">Brakuje z Tally ({integratedTallyQuote.missingQuestions.length}) — bot dopyta klienta:</p>
+                    <p className="mt-0.5 leading-snug">
+                      {integratedTallyQuote.missingQuestions.slice(0, 4).join(' • ')}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Primary Action + Follow-up Po Ciszy */}
           <div className="space-y-2">
             <button
@@ -1775,9 +2002,11 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
               )}
               {loading
                 ? 'Przygotowuję odpowiedź na podstawie Bazy Wiedzy i historii czatu...'
-                : !clientMessage.trim() && lastChatClientMsg
-                  ? 'Przelicz ponownie na bazie tego czatu'
-                  : 'Generuj odpowiedź dla klienta'}
+                : integratedTallyQuote && integratedTallyQuote.totalGrossPln > 0
+                  ? `Generuj odpowiedź z wyceną Tally (${integratedTallyQuote.totalNetPln.toLocaleString('pl-PL')} zł netto)`
+                  : !clientMessage.trim() && lastChatClientMsg
+                    ? 'Przelicz ponownie na bazie tego czatu'
+                    : 'Generuj odpowiedź dla klienta'}
             </button>
 
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/50 px-3 py-2">
@@ -1946,6 +2175,15 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       <Clock className="h-3 w-3" />
                       Zaoszczędzono ~{latestReply.estimatedTimeSavedMinutes || 15} min
                     </span>
+                    {latestReply.tallyQuote && latestReply.tallyQuote.totalNetPln > 0 && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-800"
+                        title={`Wyliczono bezpośrednio przez silnik Tally (${latestReply.tallyQuote.formId})`}
+                      >
+                        <Calculator className="h-3 w-3" />
+                        Tally Engine: {latestReply.tallyQuote.totalNetPln.toLocaleString('pl-PL')} zł netto
+                      </span>
+                    )}
                     {latestReply.contextStats && (
                       <span
                         className="rounded-md border border-indigo-200 bg-indigo-50/70 px-2 py-0.5 text-[10px] font-semibold text-indigo-700"

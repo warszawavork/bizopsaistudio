@@ -1,9 +1,45 @@
+import type {
+  TallyQuoteBreakdownItem,
+  TallyQuoteEvaluation,
+  TallyQuoteInput,
+} from '../src/types';
+
 export interface TallyKnowledgeTileDraft {
   title: string;
   category: string;
   visibility: 'public' | 'internal';
   priority: 'standard' | 'critical';
   content: string;
+}
+
+export interface TallyLiveRates {
+  dewLetn: number;
+  dewCal: number;
+  norvLetn: number;
+  norvCal: number;
+  archLetn: number;
+  arch70: number;
+  arch120: number;
+  archPrem: number;
+  fundSlupy: number;
+  fundLawy: number;
+  fundPlyta: number;
+  tarasZad: number;
+  tarasOtw: number;
+  podlogowka: number;
+  grzejnik: number;
+  klima: number;
+  lazBase: number;
+  lazPrem: number;
+  umeblowanie: number;
+  samaKuchnia: number;
+  kuchniaPlus: number;
+  kominek: number;
+  podKominek: number;
+  dostawaKm: number;
+  roofAngleMpzp: number;
+  poddaszeMult: number;
+  pietroMult: number;
 }
 
 interface TallyParsedBlock {
@@ -86,6 +122,46 @@ function parseTallyNextData(html: string, formId: string) {
   return { formName, calcVars, sectionMap };
 }
 
+function extractRatesFromVars(vars: Map<string, number>): TallyLiveRates {
+  const num = (candidates: string[], fallback: number): number => {
+    for (const [k, v] of vars.entries()) {
+      const lower = k.toLowerCase();
+      if (candidates.every((c) => lower.includes(c.toLowerCase()))) return v;
+    }
+    return fallback;
+  };
+
+  return {
+    dewLetn: num(['deweloperski'], 2500),
+    dewCal: num(['deweloperski', 'caloroczny'], 2650),
+    norvLetn: vars.get('priceNORVIL') ?? 3000,
+    norvCal: num(['norvil', 'caloroczny'], 3150),
+    archLetn: num(['architekt', 'letnisk'], 4500),
+    arch70: num(['architekt', '70m2'], 16000),
+    arch120: num(['architekt', '70-120'], 17000),
+    archPrem: num(['architekt', 'premium'], 20000),
+    fundSlupy: num(['slup'], 350),
+    fundLawy: num(['law'], 600),
+    fundPlyta: num(['plyt'], 750),
+    tarasZad: num(['taras', 'zadasony'], 1500),
+    tarasOtw: num(['taras', 'otwarty'], 1000),
+    podlogowka: num(['podlog'], 187),
+    grzejnik: num(['grejnik'], 514),
+    klima: num(['klima'], 3050),
+    lazBase: num(['lazienkabase'], 14000),
+    lazPrem: num(['lazienkapremium'], 20000),
+    umeblowanie: num(['umeblowanie'], 8000),
+    samaKuchnia: num(['sama kuchnia'], 15000),
+    kuchniaPlus: num(['kuchnia plus'], 23000),
+    kominek: num(['kominek plus'], 9500),
+    podKominek: num(['kominek'], 3300),
+    dostawaKm: num(['dostawa'], 25),
+    roofAngleMpzp: 300,
+    poddaszeMult: 1.5,
+    pietroMult: 2.0,
+  };
+}
+
 export function buildTilesFromTallyHtml(html: string, formId: string): {
   formName: string;
   tiles: TallyKnowledgeTileDraft[];
@@ -134,59 +210,28 @@ export function buildTilesFromTallyHtml(html: string, formId: string): {
   return { formName, tiles };
 }
 
-const TALLY_CPQ_CACHE = new Map<
-  string,
-  { expiresAt: number; formName: string; contextText: string; liveFetched: boolean; variablesCount: number }
->();
+interface TallyCacheEntry {
+  expiresAt: number;
+  formName: string;
+  contextText: string;
+  rates: TallyLiveRates;
+  liveFetched: boolean;
+  variablesCount: number;
+}
+
+const TALLY_CPQ_CACHE = new Map<string, TallyCacheEntry>();
 
 function formatPln(val: number): string {
-  return `${val.toLocaleString('pl-PL')} zł`;
+  return `${Math.round(val).toLocaleString('pl-PL')} zł`;
 }
 
 function buildStructuredCpqContext(
   formId: string,
   formName: string,
-  vars: Map<string, number>,
+  r: TallyLiveRates,
   sectionMap: Array<{ section: string; items: string[] }>,
   liveFetched: boolean
 ): string {
-  const num = (candidates: string[], fallback: number): number => {
-    for (const [k, v] of vars.entries()) {
-      const lower = k.toLowerCase();
-      if (candidates.every((c) => lower.includes(c.toLowerCase()))) return v;
-    }
-    return fallback;
-  };
-
-  const dewLetn = num(['deweloperski'], 2500);
-  const dewCal = num(['deweloperski', 'caloroczny'], 2650);
-  const norvLetn = vars.get('priceNORVIL') ?? 3000;
-  const norvCal = num(['norvil', 'caloroczny'], 3150);
-
-  const archLetn = num(['architekt', 'letnisk'], 4500);
-  const arch70 = num(['architekt', '70m2'], 16000);
-  const arch120 = num(['architekt', '70-120'], 17000);
-  const archPrem = num(['architekt', 'premium'], 20000);
-
-  const fundSlupy = num(['slup'], 350);
-  const fundLawy = num(['law'], 600);
-  const fundPlyta = num(['plyt'], 750);
-
-  const tarasZad = num(['taras', 'zadasony'], 1500);
-  const tarasOtw = num(['taras', 'otwarty'], 1000);
-  const podlogowka = num(['podlog'], 187);
-  const grzejnik = num(['grejnik'], 514);
-  const klima = num(['klima'], 3050);
-
-  const lazBase = num(['lazienkabase'], 14000);
-  const lazPrem = num(['lazienkapremium'], 20000);
-  const umeblowanie = num(['umeblowanie'], 8000);
-  const samaKuchnia = num(['sama kuchnia'], 15000);
-  const kuchniaPlus = num(['kuchnia plus'], 23000);
-  const kominek = num(['kominek plus'], 9500);
-  const podKominek = num(['kominek'], 3300);
-  const dostawaKm = num(['dostawa'], 25);
-
   const extraOptions = sectionMap
     .filter((s) => !/wstęp|finalizacja|podstawow/i.test(s.section))
     .map((s) => `- ${s.section}: ${s.items.slice(0, 6).join(' ').replace(/\s+/g, ' ').slice(0, 220)}`)
@@ -194,63 +239,54 @@ function buildStructuredCpqContext(
 
   return [
     `OFICJALNY LIVE CENNIK I ZASADY WYCENY Z KONFIGURATORA TALLY (${formId}: "${formName}", https://tally.so/r/${formId} — ${liveFetched ? 'POBRANO NA ŻYWO' : 'PAMIĘĆ ZAPASOWA'}):`,
-    'Wszystkie poniższe kwoty są kwotami NETTO (chyba że zaznaczono BRUTTO). Bot MA OBOWIĄZEK aktywnie korzystać z tych stawek przy każdej wycenie domu parterowego, z poddaszem, piętrowego i fundamentów:',
+    'Wszystkie poniższe kwoty są kwotami NETTO (chyba że zaznaczono BRUTTO). Jawnie prezentuj klientowi wycenę pozycja po pozycji wg poniższych stawek:',
     '',
     '1. BAZA DOMU (cena za 1 m² powierzchni zabudowy podstawy × mnożnik kondygnacji):',
-    `• Standard Deweloperski Letniskowy / Rekreacyjny: ${formatPln(dewLetn)}/m² netto`,
-    `• Standard Deweloperski Całoroczny (WT2021): ${formatPln(dewCal)}/m² netto`,
-    `• Standard NORVIL (Pod klucz) Letniskowy: ${formatPln(norvLetn)}/m² netto`,
-    `• Standard NORVIL (Pod klucz) Całoroczny: ${formatPln(norvCal)}/m² netto`,
+    `• Standard Deweloperski Letniskowy / Rekreacyjny: ${formatPln(r.dewLetn)}/m² netto`,
+    `• Standard Deweloperski Całoroczny (WT2021): ${formatPln(r.dewCal)}/m² netto`,
+    `• Standard NORVIL (Pod klucz) Letniskowy: ${formatPln(r.norvLetn)}/m² netto`,
+    `• Standard NORVIL (Pod klucz) Całoroczny: ${formatPln(r.norvCal)}/m² netto`,
     '',
     '2. KONDYGNACJE / TYPY DOMÓW (MNOŻNIK BRYŁY):',
-    '• Dom PARTEROWY (1 poziom): mnożnik × 1.0 (np. 50 m² × stawka m²)',
-    '• Dom z PODDASZEM UŻYTKOWYM: mnożnik × 1.5 (np. podstawa 50 m² × 1.5 × stawka m²)',
-    '• Dom PIĘTROWY PEŁNOWYMIAROWY: mnożnik × 2.0 (np. podstawa 50 m² × 2.0 × stawka m²)',
-    '• WAŻNE: jeśli klient napisze np. „dom piętrowy 80 m²”, wyraźnie wskaż w wycenie czy liczone jest od podstawy 40 m² (razem 80 m² pow. po ×2.0), czy podstawa 80 m² (razem 160 m² pow. po ×2.0).',
+    `• Dom PARTEROWY (1 poziom): mnożnik × 1.0`,
+    `• Dom z PODDASZEM UŻYTKOWYM: mnożnik × ${r.poddaszeMult}`,
+    `• Dom PIĘTROWY PEŁNOWYMIAROWY: mnożnik × ${r.pietroMult}`,
     '',
     '3. CENNIK FUNDAMENTÓW (liczony za m² powierzchni zabudowy / przyziemia):',
-    `• Bez fundamentu (po stronie inwestora): 0 zł`,
-    `• Słupy fundamentowe / geo-wkręty: ${formatPln(fundSlupy)}/m² netto`,
-    `• Ławy fundamentowe: ${formatPln(fundLawy)}/m² netto`,
-    `• Płyta fundamentowa: ${formatPln(fundPlyta)}/m² netto`,
-    '• Adnotacja: wycena fundamentu orientacyjna dla standardowych warunków gruntowych (finalnie po badaniach geotechnicznych).',
+    `• Bez fundamentu: 0 zł | Słupy / geo-wkręty: ${formatPln(r.fundSlupy)}/m² | Ławy: ${formatPln(r.fundLawy)}/m² | Płyta fundamentowa: ${formatPln(r.fundPlyta)}/m² netto`,
     '',
-    '4. PAKIETY ARCHITEKTA (DOKUMENTACJA):',
-    `• Letniskowy (zgłoszenie do 70 m²): ${formatPln(archLetn)} netto`,
-    `• Mieszkalny do 70 m² (PAB, PT, zgłoszenie): ${formatPln(arch70)} netto`,
-    `• Mieszkalny 70–120 m² (PAB, PT, zgłoszenie): ${formatPln(arch120)} netto`,
-    `• Premium (zmiany indywidualne bryły + pełna dokumentacja): ${formatPln(archPrem)} netto`,
+    '4. PAKIETY ARCHITEKTA:',
+    `• Letniskowy do 70 m²: ${formatPln(r.archLetn)} | Mieszkalny do 70 m²: ${formatPln(r.arch70)} | Mieszkalny 70–120 m²: ${formatPln(r.arch120)} | Premium: ${formatPln(r.archPrem)} netto`,
     '',
     '5. OGRZEWANIE, DACH MPZP, WNĘTRZE I TARASY:',
-    `• Ogrzewanie podłogowe (cały dom wg m²): ${formatPln(podlogowka)}/m² netto`,
-    `• Grzejnik elektryczny WiFi 1.5 kW: ${formatPln(grzejnik)}/szt. netto`,
-    `• Klimatyzator (funkcja grzania/chłodzenia): ${formatPln(klima)}/szt. netto`,
-    '• Zmiana kąta dachu pod MPZP / WZ: +300 zł/m² netto',
-    `• Łazienka: Bez/drewno 0 zł | Pakiet Podstawowy ${formatPln(lazBase)} netto | Pakiet Premium ${formatPln(lazPrem)} netto`,
-    `• Kuchnia & Meble: Samo podstawowe umeblowanie od ${formatPln(umeblowanie)} netto | Sama kuchnia na wymiar od ${formatPln(samaKuchnia)} netto | Kuchnia + podstawowe umeblowanie od ${formatPln(kuchniaPlus)} netto`,
-    `• Kominek koza: Przygotowanie (10 m² płytki) ${formatPln(podKominek)} netto | Kominek z montażem + komin + płytka ${formatPln(kominek)} netto`,
-    `• Tarasy: Taras zadaszony ${formatPln(tarasZad)}/m² netto | Taras otwarty ${formatPln(tarasOtw)}/m² netto`,
-    '',
-    '6. DOSTAWA Z PRZEMYŚLA ORAZ PODATEK VAT:',
-    `• Transport modułów z Przemyśla: ${dostawaKm} zł BRUTTO/km × liczba transportów (domy do ok. 10×4,5 m = 1 transport; większe/piętrowe = 2+ transporty; po stronie klienta dźwig HDS/żuraw na działce).`,
-    '• Stawki VAT: 8% VAT (budynek mieszkalny całoroczny osoby fizycznej do 300 m²) lub 23% VAT (dom rekreacyjny/letniskowy lub firma B2B). Gdy brak pewności co do celu, podaj sumę NETTO oraz oba warianty BRUTTO (8% i 23%).',
-    ...(extraOptions.length > 0 ? ['', 'SKRÓT SEKCJI FORMULARZA TALLY:', ...extraOptions] : []),
+    `• Ogrzewanie podłogowe: ${formatPln(r.podlogowka)}/m² | Grzejnik WiFi 1.5 kW: ${formatPln(r.grzejnik)}/szt. | Klimatyzator: ${formatPln(r.klima)}/szt.`,
+    `• Zmiana kąta dachu pod MPZP/WZ: +${formatPln(r.roofAngleMpzp)}/m² netto`,
+    `• Łazienka: Podstawowy ${formatPln(r.lazBase)} | Premium ${formatPln(r.lazPrem)} netto`,
+    `• Kuchnia & Meble: Umeblowanie ${formatPln(r.umeblowanie)} | Sama kuchnia ${formatPln(r.samaKuchnia)} | Kuchnia + meble ${formatPln(r.kuchniaPlus)} netto`,
+    `• Kominek koza: Przygotowanie ${formatPln(r.podKominek)} | Kominek + montaż + płytka ${formatPln(r.kominek)} netto`,
+    `• Tarasy: Zadaszony ${formatPln(r.tarasZad)}/m² | Otwarty ${formatPln(r.tarasOtw)}/m² netto`,
+    `• Transport z Przemyśla: ${r.dostawaKm} zł brutto/km × liczba modułów (dźwig po stronie klienta). VAT: 8% (mieszkalny całoroczny do 300 m²) lub 23%.`,
+    ...(extraOptions.length > 0 ? ['', 'SEKCJE FORMULARZA TALLY:', ...extraOptions] : []),
   ].join('\n');
 }
 
-export async function getLiveTallyCpqContext(formId = 'dWO4Oq'): Promise<{
-  contextText: string;
+export async function getLiveTallyData(formId = 'dWO4Oq', forceRefresh = false): Promise<{
+  formId: string;
   formName: string;
+  contextText: string;
+  rates: TallyLiveRates;
   liveFetched: boolean;
   variablesCount: number;
 }> {
   const cleanId = extractTallyFormId(formId);
   const now = Date.now();
   const cached = TALLY_CPQ_CACHE.get(cleanId);
-  if (cached && cached.expiresAt > now) {
+  if (!forceRefresh && cached && cached.expiresAt > now) {
     return {
-      contextText: cached.contextText,
+      formId: cleanId,
       formName: cached.formName,
+      contextText: cached.contextText,
+      rates: cached.rates,
       liveFetched: cached.liveFetched,
       variablesCount: cached.variablesCount,
     };
@@ -258,43 +294,393 @@ export async function getLiveTallyCpqContext(formId = 'dWO4Oq'): Promise<{
 
   try {
     const res = await fetch(`https://tally.so/r/${encodeURIComponent(cleanId)}`, {
-      headers: { 'User-Agent': 'BizOpsAIStudio/1.0 (+live-cpq)' },
-      signal: AbortSignal.timeout(5500),
+      headers: { 'User-Agent': 'BizOpsAIStudio/1.0 (+live-cpq-engine)' },
+      signal: AbortSignal.timeout(6000),
     });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     const { formName, calcVars, sectionMap } = parseTallyNextData(html, cleanId);
-    const contextText = buildStructuredCpqContext(cleanId, formName, calcVars, sectionMap, true);
-    const entry = {
-      expiresAt: now + 10 * 60 * 1000,
+    const rates = extractRatesFromVars(calcVars);
+    const contextText = buildStructuredCpqContext(cleanId, formName, rates, sectionMap, true);
+    const entry: TallyCacheEntry = {
+      expiresAt: now + 5 * 60 * 1000,
       formName,
       contextText,
+      rates,
       liveFetched: true,
       variablesCount: calcVars.size,
     };
     TALLY_CPQ_CACHE.set(cleanId, entry);
     return {
-      contextText,
-      formName,
-      liveFetched: true,
-      variablesCount: calcVars.size,
+      formId: cleanId,
+      ...entry,
     };
   } catch {
-    const fallbackVars = new Map<string, number>();
+    const fallbackRates = extractRatesFromVars(new Map());
     const contextText = buildStructuredCpqContext(
       cleanId,
       'Kalkulator domu dla klienta FINAL',
-      fallbackVars,
+      fallbackRates,
       [],
       false
     );
     return {
-      contextText,
+      formId: cleanId,
       formName: 'Kalkulator domu dla klienta FINAL',
+      contextText,
+      rates: fallbackRates,
       liveFetched: false,
       variablesCount: 0,
     };
   }
+}
+
+export async function getLiveTallyCpqContext(formId = 'dWO4Oq') {
+  const data = await getLiveTallyData(formId, false);
+  return {
+    contextText: data.contextText,
+    formName: data.formName,
+    liveFetched: data.liveFetched,
+    variablesCount: data.variablesCount,
+  };
+}
+
+export async function evaluateTallyQuote(
+  rawInput: Partial<TallyQuoteInput>,
+  formId = 'dWO4Oq',
+  forceRefresh = true
+): Promise<TallyQuoteEvaluation> {
+  const live = await getLiveTallyData(formId, forceRefresh);
+  const r = live.rates;
+
+  const floorType: 'parter' | 'poddasze' | 'pietro' | null =
+    rawInput.floorType === 'parter' || rawInput.floorType === 'poddasze' || rawInput.floorType === 'pietro'
+      ? rawInput.floorType
+      : null;
+
+  const floorMult =
+    floorType === 'poddasze' ? r.poddaszeMult : floorType === 'pietro' ? r.pietroMult : 1.0;
+
+  let footprintM2: number | null =
+    typeof rawInput.areaM2 === 'number' && Number.isFinite(rawInput.areaM2) && rawInput.areaM2 > 0
+      ? Math.round(rawInput.areaM2)
+      : null;
+
+  if (footprintM2 && rawInput.areaIsTotalUsable && floorMult > 1) {
+    footprintM2 = Math.max(15, Math.round(footprintM2 / floorMult));
+  }
+
+  const standard = rawInput.standard ?? null;
+  const insulation = rawInput.insulation ?? null;
+  const effectiveStd = standard || 'norvil';
+  const effectiveIns = insulation || 'caloroczny';
+  const vatRate: 8 | 23 =
+    rawInput.vatRate === 8 || rawInput.vatRate === 23
+      ? rawInput.vatRate
+      : effectiveIns === 'letniskowy'
+        ? 23
+        : 8;
+
+  const rateM2 =
+    effectiveStd === 'deweloperski'
+      ? effectiveIns === 'caloroczny'
+        ? r.dewCal
+        : r.dewLetn
+      : effectiveIns === 'caloroczny'
+        ? r.norvCal
+        : r.norvLetn;
+
+  const breakdown: TallyQuoteBreakdownItem[] = [];
+  const missingQuestions: string[] = [];
+
+  if (footprintM2) {
+    const baseHouseNet = Math.round(footprintM2 * rateM2 * floorMult);
+    const stdLabel =
+      effectiveStd === 'deweloperski' ? 'Standard Deweloperski' : 'Standard NORVIL (Pod klucz)';
+    const insLabel = effectiveIns === 'caloroczny' ? 'Całoroczny' : 'Letniskowy';
+    const floorLabel =
+      floorType === 'poddasze'
+        ? `z poddaszem użytkowym (×${floorMult})`
+        : floorType === 'pietro'
+          ? `piętrowy pełnowymiarowy (×${floorMult})`
+          : 'parterowy (×1.0)';
+    const totalAreaLabel =
+      floorMult > 1 ? ` ≈ ${Math.round(footprintM2 * floorMult)} m² pow. całk.` : '';
+
+    breakdown.push({
+      key: 'base_house',
+      label: `Dom ${stdLabel} ${insLabel}, ${floorLabel}`,
+      formula: `${footprintM2} m² podstawy${totalAreaLabel} × ${floorMult} × ${formatPln(rateM2)}/m²`,
+      netPln: baseHouseNet,
+      isDefaultAssumed: !standard || !insulation || !floorType,
+    });
+  } else {
+    missingQuestions.push('Powierzchnia zabudowy domu (np. 35, 50, 70 m² — podstawa parteru)');
+  }
+
+  if (!standard) {
+    missingQuestions.push(
+      `Standard wykończenia: Deweloperski (${formatPln(effectiveIns === 'caloroczny' ? r.dewCal : r.dewLetn)}/m²) czy NORVIL Pod klucz (${formatPln(effectiveIns === 'caloroczny' ? r.norvCal : r.norvLetn)}/m²)`
+    );
+  }
+  if (!insulation) {
+    missingQuestions.push('Przeznaczenie i izolacja: Dom całoroczny mieszkalny (WT2021) czy letniskowy / rekreacyjny');
+  }
+  if (!floorType) {
+    missingQuestions.push('Typ kondygnacji: Parterowy (×1.0), Poddasze użytkowe (×1.5) czy Piętrowy pełnowymiarowy (×2.0)');
+  }
+
+  // Fundamenty
+  const foundation = rawInput.foundation ?? null;
+  if (foundation && foundation !== 'brak' && footprintM2) {
+    const fRate =
+      foundation === 'slupy' ? r.fundSlupy : foundation === 'lawy' ? r.fundLawy : r.fundPlyta;
+    const fLabel =
+      foundation === 'slupy'
+        ? 'Fundament słupowy / geo-wkręty'
+        : foundation === 'lawy'
+          ? 'Fundament: ławy fundamentowe'
+          : 'Fundament: płyta fundamentowa';
+    breakdown.push({
+      key: 'foundation',
+      label: fLabel,
+      formula: `${footprintM2} m² × ${formatPln(fRate)}/m²`,
+      netPln: Math.round(footprintM2 * fRate),
+    });
+  } else if (foundation === 'brak') {
+    breakdown.push({
+      key: 'foundation',
+      label: 'Bez fundamentu (po stronie inwestora)',
+      formula: '0 zł',
+      netPln: 0,
+    });
+  } else {
+    missingQuestions.push(
+      `Fundament: Słupy (${formatPln(r.fundSlupy)}/m²), Ławy (${formatPln(r.fundLawy)}/m²), Płyta (${formatPln(r.fundPlyta)}/m²) czy we własnym zakresie`
+    );
+  }
+
+  // Architekt
+  const arch = rawInput.architectPkg ?? null;
+  if (arch && arch !== 'none') {
+    const archPrice =
+      arch === 'letniskowy'
+        ? r.archLetn
+        : arch === 'mieszkalny_70'
+          ? r.arch70
+          : arch === 'mieszkalny_120'
+            ? r.arch120
+            : r.archPrem;
+    const archLabel =
+      arch === 'letniskowy'
+        ? 'Pakiet architekta: Letniskowy do 70 m²'
+        : arch === 'mieszkalny_70'
+          ? 'Pakiet architekta: Mieszkalny do 70 m² (PAB, PT)'
+          : arch === 'mieszkalny_120'
+            ? 'Pakiet architekta: Mieszkalny 70–120 m² (PAB, PT)'
+            : 'Pakiet architekta: Premium (zmiany indywidualne)';
+    breakdown.push({
+      key: 'architect',
+      label: archLabel,
+      formula: 'ryczałt za dokumentację',
+      netPln: archPrice,
+    });
+  } else if (!arch) {
+    missingQuestions.push(
+      `Dokumentacja / Pakiet architekta (Letniskowy ${formatPln(r.archLetn)}, Mieszkalny do 70 m² ${formatPln(r.arch70)}, 70–120 m² ${formatPln(r.arch120)}, Premium ${formatPln(r.archPrem)})`
+    );
+  }
+
+  // Ogrzewanie podłogowe, grzejniki, klimatyzacja
+  if (rawInput.underfloorHeating === true && footprintM2) {
+    breakdown.push({
+      key: 'underfloor',
+      label: 'Ogrzewanie podłogowe na całej powierzchni',
+      formula: `${footprintM2} m² × ${formatPln(r.podlogowka)}/m²`,
+      netPln: Math.round(footprintM2 * r.podlogowka),
+    });
+  }
+  const heatersCount = Math.max(0, Math.round(Number(rawInput.heatersCount) || 0));
+  if (heatersCount > 0) {
+    breakdown.push({
+      key: 'heaters',
+      label: `Grzejniki elektryczne WiFi 1.5 kW (${heatersCount} szt.)`,
+      formula: `${heatersCount} szt. × ${formatPln(r.grzejnik)}`,
+      netPln: heatersCount * r.grzejnik,
+    });
+  }
+  const acCount = Math.max(0, Math.round(Number(rawInput.acCount) || 0));
+  if (acCount > 0) {
+    breakdown.push({
+      key: 'ac',
+      label: `Klimatyzacja z funkcją grzania (${acCount} szt.)`,
+      formula: `${acCount} szt. × ${formatPln(r.klima)}`,
+      netPln: acCount * r.klima,
+    });
+  }
+  if (rawInput.underfloorHeating === null && heatersCount === 0 && acCount === 0) {
+    missingQuestions.push(
+      `Ogrzewanie: podłogówka (${formatPln(r.podlogowka)}/m²), grzejniki WiFi (${formatPln(r.grzejnik)}/szt.) lub klimatyzacja (${formatPln(r.klima)}/szt.)`
+    );
+  }
+
+  // Łazienka
+  const bath = rawInput.bathroom ?? null;
+  if (bath === 'podstawowy' || bath === 'premium') {
+    const bPrice = bath === 'premium' ? r.lazPrem : r.lazBase;
+    breakdown.push({
+      key: 'bathroom',
+      label: bath === 'premium' ? 'Łazienka — Pakiet Premium' : 'Łazienka — Pakiet Podstawowy',
+      formula: 'kompletne wykończenie z białym montażem',
+      netPln: bPrice,
+    });
+  } else if (!bath) {
+    missingQuestions.push(
+      `Wykończenie łazienki: Pakiet Podstawowy (${formatPln(r.lazBase)}) czy Premium (${formatPln(r.lazPrem)})`
+    );
+  }
+
+  // Kuchnia i umeblowanie
+  const kitchen = rawInput.kitchenPkg ?? null;
+  if (kitchen && kitchen !== 'none') {
+    const kPrice =
+      kitchen === 'kuchnia_meble'
+        ? r.kuchniaPlus
+        : kitchen === 'kuchnia'
+          ? r.samaKuchnia
+          : r.umeblowanie;
+    const kLabel =
+      kitchen === 'kuchnia_meble'
+        ? 'Kuchnia na wymiar + podstawowe umeblowanie'
+        : kitchen === 'kuchnia'
+          ? 'Kuchnia na indywidualne zamówienie'
+          : 'Podstawowe umeblowanie domu';
+    breakdown.push({
+      key: 'kitchen',
+      label: kLabel,
+      formula: 'cena od (pakiet meblowy)',
+      netPln: kPrice,
+    });
+  } else if (!kitchen) {
+    missingQuestions.push(
+      `Kuchnia / umeblowanie: Umeblowanie (${formatPln(r.umeblowanie)}), Sama kuchnia (${formatPln(r.samaKuchnia)}) czy Komplet (${formatPln(r.kuchniaPlus)})`
+    );
+  }
+
+  // Kominek
+  const fireplace = rawInput.fireplace ?? null;
+  if (fireplace === 'koza' || fireplace === 'przygotowanie') {
+    breakdown.push({
+      key: 'fireplace',
+      label:
+        fireplace === 'koza'
+          ? 'Kominek wolnostojący typu Koza + montaż + 10 m² płytki'
+          : 'Przygotowanie pod kominek (10 m² płytki ceramicznej)',
+      formula: 'komplet prac wykończeniowych',
+      netPln: fireplace === 'koza' ? r.kominek : r.podKominek,
+    });
+  }
+
+  // Tarasy
+  const covTerrace = Math.max(0, Math.round(Number(rawInput.coveredTerraceM2) || 0));
+  if (covTerrace > 0) {
+    breakdown.push({
+      key: 'terrace_covered',
+      label: `Taras zadaszony (${covTerrace} m²)`,
+      formula: `${covTerrace} m² × ${formatPln(r.tarasZad)}/m²`,
+      netPln: covTerrace * r.tarasZad,
+    });
+  }
+  const openTerrace = Math.max(0, Math.round(Number(rawInput.openTerraceM2) || 0));
+  if (openTerrace > 0) {
+    breakdown.push({
+      key: 'terrace_open',
+      label: `Taras otwarty (${openTerrace} m²)`,
+      formula: `${openTerrace} m² × ${formatPln(r.tarasOtw)}/m²`,
+      netPln: openTerrace * r.tarasOtw,
+    });
+  }
+
+  // Dach MPZP
+  if (rawInput.roofAngleMpzp === true && footprintM2) {
+    breakdown.push({
+      key: 'roof_mpzp',
+      label: 'Dostosowanie kąta nachylenia dachu do MPZP / WZ',
+      formula: `${footprintM2} m² × ${formatPln(r.roofAngleMpzp)}/m²`,
+      netPln: footprintM2 * r.roofAngleMpzp,
+    });
+  }
+
+  // Dostawa (w Tally: 25 zł brutto/km * liczba transportów -> przeliczamy czysto na netto i brutto)
+  const km = Math.max(0, Math.round(Number(rawInput.deliveryKm) || 0));
+  const modules = Math.max(1, Math.round(Number(rawInput.deliveryModules) || (footprintM2 && footprintM2 > 45 ? 2 : 1)));
+  if (km > 0) {
+    const transportGross = km * modules * r.dostawaKm;
+    const transportNet = Math.round(transportGross / 1.23);
+    breakdown.push({
+      key: 'delivery',
+      label: `Transport z Przemyśla (${km} km × ${modules} transport/y)`,
+      formula: `${km} km × ${modules} mod. × ${r.dostawaKm} zł brutto/km (ok. ${formatPln(transportGross)} brutto)`,
+      netPln: transportNet,
+    });
+  } else {
+    missingQuestions.push(
+      `Lokalizacja działki / miejscowość (do wyliczenia dostawy z Przemyśla: ${r.dostawaKm} zł brutto/km × liczba modułów)`
+    );
+  }
+
+  const totalNetPln = breakdown.reduce((sum, item) => sum + item.netPln, 0);
+  const vatPln = Math.round((totalNetPln * vatRate) / 100);
+  const totalGrossPln = totalNetPln + vatPln;
+  const altVatGross8Pln = Math.round(totalNetPln * 1.08);
+  const altVatGross23Pln = Math.round(totalNetPln * 1.23);
+
+  const normalizedInput: TallyQuoteInput = {
+    areaM2: footprintM2,
+    areaIsTotalUsable: rawInput.areaIsTotalUsable,
+    standard,
+    insulation,
+    floorType,
+    foundation,
+    architectPkg: arch,
+    underfloorHeating: rawInput.underfloorHeating ?? null,
+    heatersCount,
+    acCount,
+    bathroom: bath,
+    coveredTerraceM2: covTerrace,
+    openTerraceM2: openTerrace,
+    deliveryKm: km,
+    deliveryModules: modules,
+    kitchenPkg: kitchen,
+    fireplace,
+    roofAngleMpzp: rawInput.roofAngleMpzp ?? null,
+    vatRate,
+  };
+
+  const formattedQuoteBlock = [
+    `KOSZTORYS WYLICZONY PRZEZ SILNIK TALLY (${live.formId}: "${live.formName}"):`,
+    ...breakdown.map(
+      (b) => `• ${b.label}: ${formatPln(b.netPln)} netto (${b.formula})`
+    ),
+    `• RAZEM NETTO: ${formatPln(totalNetPln)}`,
+    `• Podatek VAT (${vatRate}%): ${formatPln(vatPln)}`,
+    `• RAZEM BRUTTO (${vatRate}% VAT): ${formatPln(totalGrossPln)} (dla porównania: z 8% VAT = ${formatPln(altVatGross8Pln)}, z 23% VAT = ${formatPln(altVatGross23Pln)})`,
+  ].join('\n');
+
+  return {
+    formId: live.formId,
+    formName: live.formName,
+    liveFetched: live.liveFetched,
+    evaluatedAt: new Date().toISOString(),
+    input: normalizedInput,
+    breakdown,
+    totalNetPln,
+    vatRate,
+    vatPln,
+    totalGrossPln,
+    altVatGross8Pln,
+    altVatGross23Pln,
+    missingQuestions,
+    formattedQuoteBlock,
+  };
 }
