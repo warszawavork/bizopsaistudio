@@ -65,7 +65,6 @@ import { CustomProfileModal } from './components/CustomProfileModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
 import { WelcomeModal, type UserProfile } from './components/WelcomeModal';
 import { GeminiQuotaWidget } from './components/GeminiQuotaWidget';
-import { QuickClipboardBar } from './components/QuickClipboardBar';
 
 const STORAGE_TILES_PREFIX = 'bizops_tiles_v2_';
 const STORAGE_DEALS_PREFIX = 'bizops_deals_v2_';
@@ -1147,16 +1146,6 @@ export function App() {
         open={integrationsOpen}
         onClose={() => setIntegrationsOpen(false)}
         onConfigSaved={() => showToast('Zapisano ustawienia integracji')}
-      />
-
-      {/* Smart Quick Clipboard Listener Bar */}
-      <QuickClipboardBar
-        onInjectMessage={(cleanText, senderName) => {
-          setHandoffResponderText(cleanText);
-          setActiveTab('responder');
-          showToast(senderName ? `Wklejono wiadomość od: ${senderName}` : 'Wklejono treść ze schowka!');
-        }}
-        currentMessageText={handoffResponderText || undefined}
       />
 
       {/* Onboarding & User Identity Modal */}
