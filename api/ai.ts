@@ -1414,15 +1414,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         includeMiniQuote
           ? activeTallyQuote && activeTallyQuote.breakdown.length > 0
             ? [
-                'OBOWIĄZKOWY JAWNY KOSZTORYS WYLICZONY PRZEZ SILNIK TALLY (dWO4Oq) — NIE UKRYWAJ CEN ANI NIE ZMIENIAJ TYCH LICZB:',
-                'Została wykonana kalkulacja na żywo z oficjalnego konfiguratora Tally na bazie dotychczasowych ustaleń klienta.',
-                'W treści wiadomości (replyBody) JAWNIE i CZYTELNIE wypisz w osobnych punktorach każdą pozycję z poniższej wyceny (np. `• Dom ...: 315 000 zł netto`, `• Łazienka: 14 000 zł netto`, `• Kominek: 9 500 zł netto`), podsumuj NETTO, VAT i BRUTTO, a na końcu grzecznie zapytaj o brakujące pozycje z poniższej listy Tally:',
-                '',
-                activeTallyQuote.formattedQuoteBlock,
+                'ROZDZIAŁ ODPOWIEDZI OD KOSZTORYSU TALLY (WAŻNE DLA CZYSTOŚCI MODUŁÓW):',
+                'System wyliczył już osobno precyzyjny Kosztorys Tally (dWO4Oq), który handlowiec w aplikacji może jednym kliknięciem wysłać jako „Tylko sam kosztorys” albo kliknąć „Połącz kosztorys i odpowiedź”.',
+                'Dlatego w `replyBody` napisz elegancką, merytoryczną odpowiedź doradczą na pytania klienta (technologia, terminy, logistyka, kolejny krok) i krótko wspomnij o przygotowanym zestawieniu kosztów, ALE NIE wypisuj ręcznie w `replyBody` listy kwot ani sum netto/brutto — system wklei je dokładnie i bez duplikatów.',
                 activeTallyQuote.missingQuestions.length > 0
-                  ? `\nBRAKUJĄCE PYTANIA Z KONFIGURATORA TALLY (warto dopytać klienta, żeby doprecyzować kosztorys):\n${activeTallyQuote.missingQuestions.map((q) => `- ${q}`).join('\n')}`
+                  ? `Jeśli to pomocne, na końcu w krótkich punktorach zapytaj o brakujące dane z Tally:\n${activeTallyQuote.missingQuestions.slice(0, 4).map((q) => `- ${q}`).join('\n')}`
                   : '',
-              ].join('\n')
+              ]
+                .filter(Boolean)
+                .join('\n')
             : [
                 'MINI-KALKULACJA I ŚMIAŁE WYCENIANIE Z KONFIGURATORA TALLY (dWO4Oq) — STANDARD EXECUTIVE:',
                 'Jeśli klient pyta o cenę, budżet, wycenę domu (parterowy ×1.0, z poddaszem ×1.5, piętrowy ×2.0), fundamenty (słupy 350 / ławy 600 / płyta 750), standard Deweloperski vs NORVIL lub dodatki — ŚMIAŁO korzystaj z sekcji OFICJALNY LIVE CENNIK Z KONFIGURATORA TALLY poniżej i JAWNIE wypunktuj każdą pozycję osobno (dom + fundament + łazienka + kominek + transport + NETTO + VAT + BRUTTO):',

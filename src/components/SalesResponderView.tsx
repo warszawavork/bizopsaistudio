@@ -33,7 +33,6 @@ import {
   Trash2,
   Webhook,
   X,
-  Zap,
 } from 'lucide-react';
 import type {
   AppLanguage,
@@ -68,6 +67,7 @@ import {
 import { copyRichEmailToClipboard, formatStructuredReplyText } from '../utils/emailExport';
 import { idbGetWorkspaceItem, idbSaveWorkspaceItem } from '../utils/offlineDb';
 import { exportSalesReplyToPdf, printCleanReportHtml } from '../utils/pdfExport';
+import { formatPureTallyQuoteText, stitchReplyAndTallyQuote } from '../utils/tallyQuoteFormat';
 import { ClientChatsSidebar } from './ClientChatsSidebar';
 import { TallyConfiguratorModal } from './TallyConfiguratorModal';
 import { WebSourcesPanel } from './WebSourcesPanel';
@@ -255,6 +255,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   const [editableSubject, setEditableSubject] = useState<string>('');
   const [editableBody, setEditableBody] = useState<string>('');
+  const [baseReplyBody, setBaseReplyBody] = useState<string>('');
+  const [replyOutputMode, setReplyOutputMode] = useState<'combined' | 'quote_only' | 'reply_only'>('reply_only');
   const [activeDraftLang, setActiveDraftLang] = useState<DraftLangCode>('pl');
   const [draftCache, setDraftCache] = useState<Partial<Record<DraftLangCode, { subject: string; body: string }>>>({});
   const [draftDirtyLang, setDraftDirtyLang] = useState<DraftLangCode | null>(null);
@@ -504,12 +506,23 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   useEffect(() => {
     if (latestReply) {
-      const formattedBody = formatStructuredReplyText(latestReply.replyBody);
+      const formattedBase = formatStructuredReplyText(latestReply.replyBody);
       const baseLang = detectDraftLangCode(latestReply.detectedLanguage);
+      const quote = latestReply.tallyQuote ?? null;
+      const defaultMode: 'combined' | 'quote_only' | 'reply_only' =
+        quote && quote.breakdown.length > 0 ? 'combined' : 'reply_only';
+      const initialBody =
+        defaultMode === 'combined' && quote
+          ? stitchReplyAndTallyQuote(formattedBase, quote, baseLang)
+          : formattedBase;
+
+      setBaseReplyBody(formattedBase);
+      setIntegratedTallyQuote(quote);
+      setReplyOutputMode(defaultMode);
       setEditableSubject(latestReply.subject);
-      setEditableBody(formattedBody);
+      setEditableBody(initialBody);
       setActiveDraftLang(baseLang);
-      setDraftCache({ [baseLang]: { subject: latestReply.subject, body: formattedBody } });
+      setDraftCache({ [baseLang]: { subject: latestReply.subject, body: initialBody } });
       setDraftDirtyLang(null);
       setSavedGapToKb(false);
     }
@@ -632,7 +645,6 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         replyLanguage: langToUse,
         useWebKnowledge,
         useTallyConfig: includeMiniQuote,
-        lockedTallyQuote: includeMiniQuote ? integratedTallyQuote : null,
         includeMiniQuote,
         includedLinks,
         threadHistory: effectiveThread,
@@ -640,10 +652,15 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         followUpDaysSilent,
       });
 
-      const formattedBody = formatStructuredReplyText(result.replyBody);
-      if (result.tallyQuote && !integratedTallyQuote) {
-        setIntegratedTallyQuote(result.tallyQuote);
-      }
+      const rawFormatted = formatStructuredReplyText(result.replyBody);
+      const formattedBody =
+        result.tallyQuote && result.tallyQuote.breakdown.length > 0
+          ? stitchReplyAndTallyQuote(
+              rawFormatted,
+              result.tallyQuote,
+              detectDraftLangCode(result.detectedLanguage)
+            )
+          : rawFormatted;
       onReplyComplete(result);
       setEditableSubject(result.subject);
       setEditableBody(formattedBody);
@@ -986,7 +1003,31 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     };
   };
 
-  const handleIntegrateTallyQuote = async () => {
+  const applyReplyOutputMode = (
+    mode: 'combined' | 'quote_only' | 'reply_only',
+    quoteOverride: TallyQuoteEvaluation | null = integratedTallyQuote,
+    baseOverride: string = baseReplyBody,
+    langOverride: DraftLangCode = activeDraftLang
+  ) => {
+    setReplyOutputMode(mode);
+    let nextBody = baseOverride;
+    if (mode === 'quote_only') {
+      nextBody =
+        quoteOverride && quoteOverride.breakdown.length > 0
+          ? formatPureTallyQuoteText(quoteOverride, langOverride)
+          : '';
+    } else if (mode === 'combined' && quoteOverride && quoteOverride.breakdown.length > 0) {
+      nextBody = stitchReplyAndTallyQuote(baseOverride, quoteOverride, langOverride);
+    }
+    setEditableBody(nextBody);
+    setDraftDirtyLang(null);
+    setDraftCache((prev) => ({
+      ...prev,
+      [langOverride]: { subject: editableSubject, body: nextBody },
+    }));
+  };
+
+  const handleIntegrateTallyQuote = async (targetMode?: 'combined' | 'quote_only') => {
     const baseThread = activeChat
       ? activeChat.messages.map((m) => ({ role: m.role, text: m.text }))
       : threadHistory;
@@ -1003,6 +1044,11 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       });
       setIntegratedTallyQuote(res.quote);
       setIncludeMiniQuote(true);
+      if (targetMode) {
+        applyReplyOutputMode(targetMode, res.quote);
+      } else if (replyOutputMode !== 'reply_only') {
+        applyReplyOutputMode(replyOutputMode, res.quote);
+      }
       onLogAiCall({
         action: 'responder',
         latencyMs: res.latencyMs,
@@ -1022,17 +1068,25 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const handleRemoveIntegratedItem = (key: string) => {
     if (!integratedTallyQuote) return;
     const filtered = integratedTallyQuote.breakdown.filter((b) => b.key !== key);
-    setIntegratedTallyQuote(rebuildFormattedBlock(integratedTallyQuote, filtered));
+    const updated = rebuildFormattedBlock(integratedTallyQuote, filtered);
+    setIntegratedTallyQuote(updated);
+    if (replyOutputMode !== 'reply_only') {
+      applyReplyOutputMode(replyOutputMode, updated);
+    }
   };
 
   const handleSwitchIntegratedVat = (rate: 8 | 23) => {
     if (!integratedTallyQuote) return;
-    setIntegratedTallyQuote(rebuildFormattedBlock(integratedTallyQuote, integratedTallyQuote.breakdown, rate));
+    const updated = rebuildFormattedBlock(integratedTallyQuote, integratedTallyQuote.breakdown, rate);
+    setIntegratedTallyQuote(updated);
+    if (replyOutputMode !== 'reply_only') {
+      applyReplyOutputMode(replyOutputMode, updated);
+    }
   };
 
   const handleCreateDealFromIntegratedQuote = () => {
     if (!integratedTallyQuote || !onCreateCrmDeal) return;
-    const label = activeChat?.clientName || 'Klient Tally';
+    const label = activeChat?.clientName || latestReply?.detectedClientName || 'Klient Tally';
     onCreateCrmDeal({
       title: integratedTallyQuote.input.areaM2
         ? `Wycena Tally ${integratedTallyQuote.input.areaM2} m² — ${label}`
@@ -1914,133 +1968,6 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
             </div>
           )}
 
-          {/* Pre-Flight: Zintegruj wycenę z konfiguratora Tally na bazie czatu */}
-          <div className="space-y-2.5">
-            <button
-              type="button"
-              disabled={integratingTally || loading || (!clientMessage.trim() && (!activeChat || activeChat.messages.length === 0))}
-              onClick={() => void handleIntegrateTallyQuote()}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-amber-400/80 bg-gradient-to-r from-amber-50 via-white to-indigo-50 px-4 py-2.5 text-xs font-extrabold text-slate-900 shadow-2xs transition hover:border-amber-500 hover:shadow-sm disabled:opacity-45"
-              title="Pobiera na żywo cennik z Twojego Tally (dWO4Oq), wyciąga parametry z rozmowy i wylicza dokładny kosztorys pozycja po pozycji przed napisaniem odpowiedzi"
-            >
-              {integratingTally ? (
-                <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
-              ) : (
-                <Zap className="h-4 w-4 text-amber-500" />
-              )}
-              {integratingTally
-                ? 'Łączę z Tally (dWO4Oq) i liczę pozycja po pozycji...'
-                : integratedTallyQuote
-                  ? 'Odśwież wycenę Tally z rozmowy (dWO4Oq)'
-                  : 'Zintegruj wycenę Tally z rozmowy (dWO4Oq)'}
-            </button>
-
-            {integratedTallyQuote && (
-              <div className="rounded-2xl border border-emerald-300/90 bg-emerald-50/60 p-3.5 space-y-2.5 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="rounded-md bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-white">
-                      {integratedTallyQuote.liveFetched ? 'Tally LIVE' : 'Tally Cache'}
-                    </span>
-                    <span className="font-extrabold text-emerald-950 text-[11px]">
-                      Kosztorys ({integratedTallyQuote.breakdown.length} poz.)
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {([8, 23] as const).map((rate) => (
-                      <button
-                        key={rate}
-                        type="button"
-                        onClick={() => handleSwitchIntegratedVat(rate)}
-                        className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold transition ${
-                          integratedTallyQuote.vatRate === rate
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        VAT {rate}%
-                      </button>
-                    ))}
-                    {onCreateCrmDeal && (
-                      <button
-                        type="button"
-                        onClick={handleCreateDealFromIntegratedQuote}
-                        className="rounded-md bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-indigo-700"
-                        title="Zapisz tę wycenę od razu w Lejku CRM"
-                      >
-                        + CRM
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setIntegratedTallyQuote(null)}
-                      className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                      title="Odepnij kalkulację"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {integratedTallyQuote.breakdown.length === 0 ? (
-                  <p className="text-[11px] text-amber-800">
-                    Klient nie podał jeszcze metrażu ani wybranych opcji — bot dopyta o szczegóły z Tally poniżej.
-                  </p>
-                ) : (
-                  <div className="space-y-1 max-h-48 overflow-y-auto pr-0.5">
-                    {integratedTallyQuote.breakdown.map((item) => (
-                      <div
-                        key={item.key}
-                        className="flex items-start justify-between gap-2 rounded-xl border border-emerald-200/80 bg-white px-2.5 py-1.5"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-bold text-slate-900">
-                            {item.label}
-                            {item.isDefaultAssumed && (
-                              <span className="ml-1 text-[9px] font-semibold text-amber-600">(orient.)</span>
-                            )}
-                          </p>
-                          <p className="text-[10px] text-slate-500">{item.formula}</p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          <span className="text-[11px] font-extrabold text-emerald-800 whitespace-nowrap">
-                            {item.netPln.toLocaleString('pl-PL')} zł
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveIntegratedItem(item.key)}
-                            className="rounded p-0.5 text-slate-300 hover:text-rose-600"
-                            title="Usuń tę pozycję z kosztorysu"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-emerald-200 pt-2 text-[11px]">
-                  <span className="font-semibold text-slate-700">
-                    Netto: <strong className="text-slate-950">{integratedTallyQuote.totalNetPln.toLocaleString('pl-PL')} zł</strong>
-                  </span>
-                  <span className="font-extrabold text-emerald-900">
-                    Brutto ({integratedTallyQuote.vatRate}%): {integratedTallyQuote.totalGrossPln.toLocaleString('pl-PL')} zł
-                  </span>
-                </div>
-
-                {integratedTallyQuote.missingQuestions.length > 0 && (
-                  <div className="rounded-xl border border-amber-200/80 bg-amber-50/80 px-2.5 py-1.5 text-[10px] text-amber-900">
-                    <p className="font-bold">Brakuje z Tally ({integratedTallyQuote.missingQuestions.length}) — bot dopyta klienta:</p>
-                    <p className="mt-0.5 leading-snug">
-                      {integratedTallyQuote.missingQuestions.slice(0, 4).join(' • ')}
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
           {/* Primary Action + Follow-up Po Ciszy */}
           <div className="space-y-2">
             <button
@@ -2055,12 +1982,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                 <Sparkles className="h-4 w-4 text-indigo-300" />
               )}
               {loading
-                ? 'Przygotowuję odpowiedź na podstawie Bazy Wiedzy i historii czatu...'
-                : integratedTallyQuote && integratedTallyQuote.totalGrossPln > 0
-                  ? `Generuj odpowiedź z wyceną Tally (${integratedTallyQuote.totalNetPln.toLocaleString('pl-PL')} zł netto)`
-                  : !clientMessage.trim() && lastChatClientMsg
-                    ? 'Przelicz ponownie na bazie tego czatu'
-                    : 'Generuj odpowiedź dla klienta'}
+                ? 'Przygotowuję odpowiedź i sprawdzam kosztorys Tally...'
+                : 'Generuj odpowiedź dla klienta'}
             </button>
 
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/50 px-3 py-2">
@@ -2453,12 +2376,181 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                 </div>
               </div>
 
-              {/* Editable Subject */}
               {channelStatus && (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
                   {channelStatus}
                 </div>
               )}
+
+              {/* BLOK A: Moduł Kosztorys Tally (dWO4Oq) + Wybór trybu złożenia odpowiedzi */}
+              <div className="rounded-2xl border border-emerald-200/90 bg-gradient-to-br from-emerald-50/60 via-white to-indigo-50/40 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white">
+                      <Calculator className="h-3 w-3" />
+                      Kosztorys Tally (dWO4Oq)
+                    </span>
+                    {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 ? (
+                      <span className="text-xs font-extrabold text-slate-900">
+                        {integratedTallyQuote.totalNetPln.toLocaleString('pl-PL')} zł netto
+                        <span className="mx-1 font-normal text-slate-400">•</span>
+                        <span className="text-emerald-800">
+                          {integratedTallyQuote.totalGrossPln.toLocaleString('pl-PL')} zł brutto ({integratedTallyQuote.vatRate}% VAT)
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-medium text-slate-500">
+                        {integratingTally ? 'Liczenie wyceny na żywo z Tally...' : 'Brak wyliczonych pozycji w tym zapytaniu'}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 && (
+                      <>
+                        {([8, 23] as const).map((rate) => (
+                          <button
+                            key={rate}
+                            type="button"
+                            onClick={() => handleSwitchIntegratedVat(rate)}
+                            className={`rounded-lg px-2 py-1 text-[10px] font-bold transition ${
+                              integratedTallyQuote.vatRate === rate
+                                ? 'bg-slate-900 text-white'
+                                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            VAT {rate}%
+                          </button>
+                        ))}
+                        {onCreateCrmDeal && (
+                          <button
+                            type="button"
+                            onClick={handleCreateDealFromIntegratedQuote}
+                            className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-indigo-700"
+                            title="Zapisz tę wycenę na tablicy CRM"
+                          >
+                            + Zapisz do CRM
+                          </button>
+                        )}
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      disabled={integratingTally || loading}
+                      onClick={() => void handleIntegrateTallyQuote(replyOutputMode === 'reply_only' ? 'combined' : replyOutputMode)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-[10px] font-bold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                      title="Pobierz aktualne ceny z tally.so/r/dWO4Oq i przelicz kosztorys na bazie całej rozmowy"
+                    >
+                      {integratingTally ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3 w-3" />
+                      )}
+                      {integratedTallyQuote ? 'Odśwież z Tally' : 'Wylicz kosztorys Tally'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Rozpisane pozycje kosztorysu Tally */}
+                {integratedTallyQuote && integratedTallyQuote.breakdown.length > 0 && (
+                  <div className="grid gap-1.5 sm:grid-cols-2">
+                    {integratedTallyQuote.breakdown.map((item) => (
+                      <div
+                        key={item.key}
+                        className="flex items-start justify-between gap-2 rounded-xl border border-emerald-200/70 bg-white px-2.5 py-1.5"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold text-slate-900 leading-snug">
+                            {item.label}
+                          </p>
+                          <p className="text-[10px] text-slate-500 truncate" title={item.formula}>
+                            {item.formula}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <span className="text-[11px] font-extrabold text-emerald-800 whitespace-nowrap">
+                            {item.netPln.toLocaleString('pl-PL')} zł
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveIntegratedItem(item.key)}
+                            className="rounded p-0.5 text-slate-300 hover:text-rose-600"
+                            title="Usuń tę pozycję z kosztorysu"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {integratedTallyQuote && integratedTallyQuote.missingQuestions.length > 0 && (
+                  <p className="text-[10px] text-amber-900 bg-amber-50/90 border border-amber-200/70 rounded-xl px-2.5 py-1.5">
+                    <strong>Brakuje w Tally ({integratedTallyQuote.missingQuestions.length}):</strong>{' '}
+                    {integratedTallyQuote.missingQuestions.slice(0, 4).join(' • ')}
+                  </p>
+                )}
+
+                {/* 3 Przyciski trybu złożenia efektu końcowego */}
+                <div className="flex flex-wrap items-center gap-1.5 border-t border-emerald-200/70 pt-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mr-1">
+                    Tryb wiadomości:
+                  </span>
+                  <button
+                    type="button"
+                    disabled={integratingTally}
+                    onClick={() => {
+                      if (integratedTallyQuote && integratedTallyQuote.breakdown.length > 0) {
+                        applyReplyOutputMode('combined');
+                      } else {
+                        void handleIntegrateTallyQuote('combined');
+                      }
+                    }}
+                    className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
+                      replyOutputMode === 'combined'
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
+                    }`}
+                  >
+                    <Link2 className="h-3.5 w-3.5" />
+                    Połącz kosztorys i odpowiedź
+                  </button>
+                  <button
+                    type="button"
+                    disabled={integratingTally}
+                    onClick={() => {
+                      if (integratedTallyQuote && integratedTallyQuote.breakdown.length > 0) {
+                        applyReplyOutputMode('quote_only');
+                      } else {
+                        void handleIntegrateTallyQuote('quote_only');
+                      }
+                    }}
+                    className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
+                      replyOutputMode === 'quote_only'
+                        ? 'bg-emerald-700 text-white shadow-xs'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:border-emerald-400 hover:text-emerald-800'
+                    }`}
+                  >
+                    <Calculator className="h-3.5 w-3.5" />
+                    Tylko sam kosztorys
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyReplyOutputMode('reply_only')}
+                    className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${
+                      replyOutputMode === 'reply_only'
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'
+                    }`}
+                  >
+                    <Mail className="h-3.5 w-3.5" />
+                    Sama odpowiedź (bez cen)
+                  </button>
+                </div>
+              </div>
+
+              {/* Editable Subject */}
               <div>
                 <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-400">
                   Temat wiadomości (możesz edytować przed wysłaniem)
