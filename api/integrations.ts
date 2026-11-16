@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { neon } from '@neondatabase/serverless';
-import { buildTilesFromTallyHtml, extractTallyFormId } from './_tally';
+import { buildTilesFromTallyHtml, extractTallyFormId } from './_tally.js';
 
 const FALLBACK_NEON_URL =
   'postgresql://neondb_owner:npg_IhW6l5JcHfgS@ep-green-art-zaw9ljx1-pooler.c-2.eu-west-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require';

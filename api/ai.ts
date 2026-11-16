@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TallyQuoteEvaluation, TallyQuoteInput } from '../src/types';
-import { evaluateTallyQuoteFromLiveData, getLiveTallyCpqContext, getLiveTallyData } from './_tally';
+import { evaluateTallyQuoteFromLiveData, getLiveTallyCpqContext, getLiveTallyData } from './_tally.js';
 
 interface KnowledgeTileInput {
   id: string;
