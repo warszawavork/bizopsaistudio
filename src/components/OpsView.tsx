@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
+  Check,
   CheckCircle2,
   Clock,
   Coins,
+  Copy,
   Cpu,
   Download,
   ExternalLink,
@@ -18,7 +20,13 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { AiOpsLogEntry, WebhookConfig, WebhookSendResult } from '../types';
-import { detectTelegramChats, sendTelegramReport } from '../utils/apiClient';
+import {
+  detectTelegramChats,
+  fetchTelegramSchedule,
+  saveTelegramSchedule,
+  sendTelegramReport,
+  triggerTelegramDailyCron,
+} from '../utils/apiClient';
 
 interface OpsViewProps {
   logs: AiOpsLogEntry[];
@@ -49,7 +57,120 @@ export const OpsView: React.FC<OpsViewProps> = ({
     chats: Array<{ id: string; label: string; type: string }>;
   } | null>(null);
   const [telegramStatus, setTelegramStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const [autoEnabled, setAutoEnabled] = useState(false);
+  const [autoTime, setAutoTime] = useState('18:00');
+  const [hasCloudToken, setHasCloudToken] = useState(false);
+  const [lastAutoSentAt, setLastAutoSentAt] = useState('');
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const [copiedCronUrl, setCopiedCronUrl] = useState(false);
   const [testingWebhook, setTestingWebhook] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchTelegramSchedule()
+      .then((res) => {
+        if (cancelled || !res.success) return;
+        const s = res.schedule;
+        setAutoEnabled(s.enabled);
+        setHasCloudToken(s.hasToken);
+        setLastAutoSentAt(s.lastSentAt || '');
+        const hh = String(s.sendHour ?? 18).padStart(2, '0');
+        const mm = String(s.sendMinute ?? 0).padStart(2, '0');
+        setAutoTime(`${hh}:${mm}`);
+        if (s.chatId && !telegramChatId) {
+          setTelegramChatId(s.chatId);
+          try {
+            localStorage.setItem('bizops_tg_chat_id', s.chatId);
+          } catch {
+            // ignore
+          }
+        }
+      })
+      .catch(() => {
+        // Offline gracefully ignores
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSaveTelegramSchedule = async (overrideEnabled?: boolean) => {
+    const cleanToken = telegramToken.trim().replace(/^bot/i, '').replace(/\s+/g, '');
+    const cleanChatId = telegramChatId.trim().replace(/\s+/g, '');
+    const nextEnabled = overrideEnabled ?? autoEnabled;
+    const [hhRaw, mmRaw] = autoTime.split(':');
+    const sendHour = Math.max(0, Math.min(23, Number(hhRaw ?? 18) || 0));
+    const sendMinute = Math.max(0, Math.min(59, Number(mmRaw ?? 0) || 0));
+
+    if (nextEnabled && !cleanToken && !hasCloudToken) {
+      setTelegramStatus({ ok: false, text: 'Najpierw wklej Bot Token, aby włączyć raport codzienny.' });
+      return;
+    }
+    if (nextEnabled && !cleanChatId) {
+      setTelegramStatus({ ok: false, text: 'Podaj Chat ID (albo kliknij Wykryj moje Chat ID).' });
+      return;
+    }
+
+    setSavingSchedule(true);
+    setTelegramStatus(null);
+    try {
+      if (cleanToken) localStorage.setItem('bizops_tg_token', cleanToken);
+      if (cleanChatId) localStorage.setItem('bizops_tg_chat_id', cleanChatId);
+
+      const res = await saveTelegramSchedule({
+        enabled: nextEnabled,
+        botToken: cleanToken || undefined,
+        chatId: cleanChatId,
+        sendHour,
+        sendMinute,
+        timezone: 'Europe/Warsaw',
+      });
+      setAutoEnabled(nextEnabled);
+      if (res.schedule?.hasToken) setHasCloudToken(true);
+      const formattedTime = `${String(sendHour).padStart(2, '0')}:${String(sendMinute).padStart(2, '0')}`;
+      setTelegramStatus({
+        ok: true,
+        text: nextEnabled
+          ? `Zapisano harmonogram: automatyczny raport codziennie o ${formattedTime} (Europe/Warsaw).`
+          : 'Wyłączono automatyczny raport dzienny.',
+      });
+    } catch (err) {
+      setTelegramStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : 'Nie udało się zapisać harmonogramu w chmurze.',
+      });
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+
+  const handleTestCronNow = async () => {
+    setSendingTelegram(true);
+    setTelegramStatus(null);
+    try {
+      const res = await triggerTelegramDailyCron(true);
+      if (res.sent) {
+        setLastAutoSentAt(`${res.date || ''} ${res.time || ''}`.trim());
+        setTelegramStatus({
+          ok: true,
+          text: `Wysłano automatyczny raport z bazy Neon na Telegram (${res.chatLabel || 'OK'})!`,
+        });
+      } else {
+        setTelegramStatus({
+          ok: false,
+          text: res.error || res.reason || 'Najpierw zapisz harmonogram z tokenem i Chat ID.',
+        });
+      }
+    } catch (err) {
+      setTelegramStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : 'Błąd wysyłki raportu z harmonogramu.',
+      });
+    } finally {
+      setSendingTelegram(false);
+    }
+  };
 
   const handleDetectTelegramChat = async () => {
     const cleanToken = telegramToken.trim().replace(/^bot/i, '').replace(/\s+/g, '');
@@ -367,6 +488,92 @@ export const OpsView: React.FC<OpsViewProps> = ({
             )}
           </div>
         )}
+
+        {/* Automatyczny raport codziennie o wybranej godzinie */}
+        <div className="rounded-xl border border-sky-200/80 bg-white/85 p-3.5 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-sky-600" />
+              <div>
+                <p className="text-xs font-bold text-slate-900">
+                  Automatyczny raport codziennie o wybranej godzinie
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  Zapisany w chmurze Neon (Europe/Warsaw) — wysyła statystyki AI i Skrzynki dokładnie raz dziennie.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={savingSchedule}
+                onClick={() => void handleSaveTelegramSchedule(!autoEnabled)}
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-extrabold transition ${
+                  autoEnabled
+                    ? 'bg-emerald-600 text-white shadow-2xs'
+                    : 'border border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                {autoEnabled ? 'Auto: WŁĄCZONE' : 'Auto: WYŁĄCZONE'}
+              </button>
+
+              <input
+                type="time"
+                value={autoTime}
+                onChange={(e) => setAutoTime(e.target.value)}
+                className="rounded-lg border border-sky-200 bg-sky-50/60 px-2.5 py-1 text-xs font-mono font-bold text-slate-900 outline-none focus:border-sky-500"
+                title="Godzina codziennej wysyłki raportu"
+              />
+
+              <button
+                type="button"
+                disabled={savingSchedule}
+                onClick={() => void handleSaveTelegramSchedule()}
+                className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-3 py-1 text-[11px] font-bold text-white hover:bg-sky-700 disabled:opacity-50"
+              >
+                {savingSchedule && <Loader2 className="h-3 w-3 animate-spin" />}
+                Zapisz godzinę
+              </button>
+
+              {hasCloudToken && telegramChatId && (
+                <button
+                  type="button"
+                  disabled={sendingTelegram}
+                  onClick={() => void handleTestCronNow()}
+                  className="rounded-lg border border-sky-300 bg-sky-50 px-2.5 py-1 text-[10px] font-bold text-sky-800 hover:bg-sky-100 disabled:opacity-50"
+                  title="Wyślij teraz raport chmurowy taki sam jak o wybranej godzinie"
+                >
+                  Testuj auto-raport
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500 pt-1 border-t border-slate-100">
+            <span>
+              {lastAutoSentAt
+                ? `Ostatnia automatyczna wysyłka: ${lastAutoSentAt}`
+                : 'Wysyła się automatycznie w tle przy otwartej aplikacji.'}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <span>Dla wysyłki 24/7 przy wyłączonym komputerze (Make / cron-job.org GET):</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const cronUrl = `${window.location.origin}/api/integrations?action=run_telegram_daily_cron`;
+                  void navigator.clipboard.writeText(cronUrl);
+                  setCopiedCronUrl(true);
+                  window.setTimeout(() => setCopiedCronUrl(false), 1800);
+                }}
+                className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-700 hover:border-sky-300 hover:text-sky-800"
+              >
+                {copiedCronUrl ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                {copiedCronUrl ? 'Skopiowano URL Cron!' : 'Kopiuj URL Cron'}
+              </button>
+            </div>
+          </div>
+        </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-sky-100 text-xs">
           <div className="flex-1 min-w-[220px]">

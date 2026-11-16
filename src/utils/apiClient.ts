@@ -651,6 +651,49 @@ export async function sendTelegramReport(params: {
   return postJson('/api/integrations', { action: 'telegram_send', ...params });
 }
 
+export interface TelegramDailySchedule {
+  enabled: boolean;
+  hasToken: boolean;
+  chatId: string;
+  sendHour: number;
+  sendMinute: number;
+  timezone: string;
+  lastSentDate: string;
+  lastSentAt: string;
+}
+
+export async function fetchTelegramSchedule(): Promise<{
+  success: boolean;
+  schedule: TelegramDailySchedule;
+}> {
+  const res = await fetch('/api/integrations?action=get_telegram_schedule');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function saveTelegramSchedule(params: {
+  enabled: boolean;
+  botToken?: string;
+  chatId: string;
+  sendHour: number;
+  sendMinute: number;
+  timezone?: string;
+}): Promise<{ success: boolean; schedule: Partial<TelegramDailySchedule> }> {
+  return postJson('/api/integrations', { action: 'save_telegram_schedule', ...params });
+}
+
+export async function triggerTelegramDailyCron(force = false): Promise<{
+  ok: boolean;
+  sent: boolean;
+  reason?: string;
+  date?: string;
+  time?: string;
+  chatLabel?: string;
+  error?: string;
+}> {
+  return postJson('/api/integrations', { action: 'run_telegram_daily_cron', force });
+}
+
 export async function fetchCloudWorkspace(
   presetId: string,
   signal?: AbortSignal,

@@ -37,9 +37,11 @@ import type {
 import {
   fetchCloudAiStats,
   fetchCloudWorkspace,
+  fetchTelegramSchedule,
   recordCloudAiLog,
   saveCloudWorkspaceKey,
   sendToWebhook,
+  triggerTelegramDailyCron,
 } from './utils/apiClient';
 import {
   idbGetChatMessages,
@@ -301,6 +303,54 @@ export function App() {
     return () => {
       engine.destroy();
       syncEngineRef.current = null;
+    };
+  }, []);
+
+  // Automatyczny harmonogram dziennych raportów Telegram (działa niezawodnie co minutę bez duplikatów)
+  useEffect(() => {
+    let timerId: number | null = null;
+    let disposed = false;
+
+    const checkSchedule = async () => {
+      try {
+        const res = await fetchTelegramSchedule();
+        if (disposed || !res.success || !res.schedule.enabled) return;
+        const now = new Date();
+        const todayStr = new Intl.DateTimeFormat('en-CA', {
+          timeZone: res.schedule.timezone || 'Europe/Warsaw',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).format(now);
+        const parts = Object.fromEntries(
+          new Intl.DateTimeFormat('en-GB', {
+            timeZone: res.schedule.timezone || 'Europe/Warsaw',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          })
+            .formatToParts(now)
+            .map((p) => [p.type, p.value])
+        );
+        const nowMins = Number(parts.hour === '24' ? 0 : parts.hour) * 60 + Number(parts.minute || 0);
+        const targetMins = res.schedule.sendHour * 60 + res.schedule.sendMinute;
+
+        if (res.schedule.lastSentDate !== todayStr && nowMins >= targetMins) {
+          await triggerTelegramDailyCron(false);
+        }
+      } catch {
+        // cichy fallback offline
+      }
+    };
+
+    void checkSchedule();
+    timerId = window.setInterval(() => {
+      void checkSchedule();
+    }, 60_000);
+
+    return () => {
+      disposed = true;
+      if (timerId !== null) window.clearInterval(timerId);
     };
   }, []);
 

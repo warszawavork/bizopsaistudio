@@ -303,6 +303,278 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+function sanitizeTelegramToken(raw: unknown): string {
+  return String(raw || '').trim().replace(/^bot/i, '').replace(/\s+/g, '');
+}
+
+function isValidTelegramToken(token: string): boolean {
+  return /^\d{5,16}:[A-Za-z0-9_-]{20,}$/.test(token);
+}
+
+async function dispatchTelegramMessage(
+  cleanToken: string,
+  rawChatId: string,
+  text: string,
+  parseMode?: 'HTML' | 'Markdown'
+): Promise<
+  | { ok: true; messageId: number | null; chatId: string; chatLabel: string }
+  | { ok: false; error: string; telegramDescription: string }
+> {
+  const tgPost = async (mode?: string) => {
+    const tgRes = await fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: rawChatId,
+        text,
+        ...(mode ? { parse_mode: mode } : {}),
+        disable_web_page_preview: true,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const tgJson = (await tgRes.json().catch(() => ({}))) as {
+      ok?: boolean;
+      description?: string;
+      result?: { message_id?: number; chat?: { id?: number; title?: string; username?: string; first_name?: string } };
+    };
+    return { tgRes, tgJson };
+  };
+
+  let { tgRes, tgJson } = await tgPost(parseMode);
+
+  if (!tgRes.ok && parseMode && /parse entities/i.test(String(tgJson.description || ''))) {
+    const plain = text.replace(/<[^>]+>/g, '');
+    const retry = await tgPost(undefined);
+    tgRes = retry.tgRes;
+    tgJson = retry.tgJson;
+    if (!tgRes.ok && plain !== text) {
+      const retryPlain = await fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: rawChatId, text: plain, disable_web_page_preview: true }),
+        signal: AbortSignal.timeout(10000),
+      });
+      tgRes = retryPlain;
+      tgJson = (await retryPlain.json().catch(() => ({}))) as typeof tgJson;
+    }
+  }
+
+  if (!tgRes.ok || !tgJson.ok) {
+    const desc = String(tgJson.description || '');
+    const lower = desc.toLowerCase();
+    let friendly = `Telegram API (${tgRes.status}): ${desc || 'Nieznany błąd'}`;
+    if (lower.includes('unauthorized')) {
+      friendly = 'Nieprawidłowy Bot Token (Unauthorized). Sprawdź token skopiowany z @BotFather.';
+    } else if (lower.includes("can't send messages to bots")) {
+      friendly =
+        'W polu Chat ID wpisałeś ID samego bota zamiast swojego prywatnego Chat ID! Kliknij przycisk „Wykryj moje Chat ID”.';
+    } else if (
+      lower.includes('chat not found') ||
+      lower.includes('initiate conversation') ||
+      lower.includes('blocked by the user')
+    ) {
+      let botUrl = '';
+      try {
+        const meR = await fetch(`https://api.telegram.org/bot${cleanToken}/getMe`, {
+          signal: AbortSignal.timeout(4000),
+        });
+        const meJ = (await meR.json()) as { result?: { username?: string } };
+        if (meJ.result?.username) botUrl = `https://t.me/${meJ.result.username}`;
+      } catch {
+        // ignore
+      }
+      friendly = botUrl
+        ? `Telegram (${desc}): nowy bot nie może napisać pierwszy, dopóki nie otworzysz ${botUrl} i nie klikniesz START (/start).`
+        : `Telegram (${desc}): otwórz swojego nowego bota w Telegramie i kliknij START (/start).`;
+    }
+    return { ok: false, error: friendly, telegramDescription: desc };
+  }
+
+  return {
+    ok: true,
+    messageId: tgJson.result?.message_id || null,
+    chatId: String(tgJson.result?.chat?.id || rawChatId),
+    chatLabel:
+      tgJson.result?.chat?.title ||
+      tgJson.result?.chat?.first_name ||
+      (tgJson.result?.chat?.username ? `@${tgJson.result.chat.username}` : rawChatId),
+  };
+}
+
+async function ensureTelegramScheduleTable(sql: DbSql) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS bizops_telegram_schedules (
+      id TEXT PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      bot_token TEXT NOT NULL DEFAULT '',
+      chat_id TEXT NOT NULL DEFAULT '',
+      send_hour INT NOT NULL DEFAULT 18,
+      send_minute INT NOT NULL DEFAULT 0,
+      timezone TEXT NOT NULL DEFAULT 'Europe/Warsaw',
+      last_sent_date TEXT NOT NULL DEFAULT '',
+      last_sent_at TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+}
+
+function getZonedClock(timeZone: string) {
+  const safeTz = timeZone || 'Europe/Warsaw';
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: safeTz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
+  const hour = Number(parts.hour === '24' ? '0' : parts.hour || 0);
+  const minute = Number(parts.minute || 0);
+  const dateStr = `${parts.year}-${parts.month}-${parts.day}`;
+  const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  return { dateStr, timeStr, hour, minute, totalMinutes: hour * 60 + minute };
+}
+
+async function buildCloudDailyTelegramReport(sql: DbSql, dateStr: string, timeStr: string): Promise<string> {
+  let todayCalls = 0;
+  let todaySuccess = 0;
+  let todayTokens = 0;
+  let avgLatency = 0;
+  let pendingInbox = 0;
+  let tallyInboxToday = 0;
+
+  try {
+    const logStats = await sql`
+      SELECT
+        COUNT(*)::int as total_calls,
+        COUNT(*) FILTER (WHERE status = 'success')::int as success_calls,
+        COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
+        COALESCE(ROUND(AVG(NULLIF(latency_ms, 0))), 0)::int as avg_latency
+      FROM bizops_ai_logs
+      WHERE (timestamp AT TIME ZONE 'Europe/Warsaw')::date = ${dateStr}::date;
+    `;
+    todayCalls = Number(logStats[0]?.total_calls || 0);
+    todaySuccess = Number(logStats[0]?.success_calls || 0);
+    todayTokens = Number(logStats[0]?.total_tokens || 0);
+    avgLatency = Number(logStats[0]?.avg_latency || 0);
+  } catch {
+    // Table may not exist yet on fresh DB
+  }
+
+  try {
+    const inboxStats = await sql`
+      SELECT
+        COUNT(*) FILTER (WHERE handled = false)::int as pending_count,
+        COUNT(*) FILTER (WHERE source = 'tally' AND (created_at AT TIME ZONE 'Europe/Warsaw')::date = ${dateStr}::date)::int as tally_today
+      FROM bizops_inbox_events;
+    `;
+    pendingInbox = Number(inboxStats[0]?.pending_count || 0);
+    tallyInboxToday = Number(inboxStats[0]?.tally_today || 0);
+  } catch {
+    // ignore
+  }
+
+  return [
+    '📊 <b>RAPORT AUTOMATYCZNY • BIZOPS AI STUDIO</b>',
+    `📅 Data: ${dateStr} (${timeStr} • Europe/Warsaw)`,
+    '',
+    `⚡ <b>Dzisiejsze wywołania AI:</b> ${todayCalls} (sukces: ${todaySuccess})`,
+    `⏱️ <b>Średni czas (latency):</b> ${avgLatency} ms`,
+    `🔢 <b>Tokeny dzisiaj:</b> ${todayTokens.toLocaleString('pl-PL')}`,
+    `📥 <b>Oczekujące w Skrzynce:</b> ${pendingInbox} (nowe z Tally dzisiaj: ${tallyInboxToday})`,
+    '💰 <b>Koszt API:</b> 0,00 zł (Darmowy limit Google)',
+    '',
+    '🤖 <i>Wysłano automatycznie zgodnie z harmonogramem BizOps AI Studio</i>',
+  ].join('\n');
+}
+
+async function executeScheduledTelegramReport(sql: DbSql, force = false) {
+  await ensureTelegramScheduleTable(sql);
+  const rows = await sql`
+    SELECT * FROM bizops_telegram_schedules WHERE id = 'default' LIMIT 1;
+  `;
+  const sched = rows[0] as
+    | {
+        enabled: boolean;
+        bot_token: string;
+        chat_id: string;
+        send_hour: number;
+        send_minute: number;
+        timezone: string;
+        last_sent_date: string;
+      }
+    | undefined;
+
+  if (!sched || (!sched.enabled && !force)) {
+    return { ok: true, sent: false, reason: 'Harmonogram automatyczny jest wyłączony.' };
+  }
+  const cleanToken = sanitizeTelegramToken(sched.bot_token);
+  const cleanChatId = String(sched.chat_id || '').trim().replace(/\s+/g, '');
+  if (!isValidTelegramToken(cleanToken) || !cleanChatId) {
+    return { ok: true, sent: false, reason: 'Brak prawidłowego tokena lub Chat ID w harmonogramie.' };
+  }
+
+  const clock = getZonedClock(sched.timezone || 'Europe/Warsaw');
+  const targetMinutes = Number(sched.send_hour) * 60 + Number(sched.send_minute);
+
+  if (!force) {
+    if (sched.last_sent_date === clock.dateStr) {
+      return { ok: true, sent: false, reason: `Raport na dziś (${clock.dateStr}) został już wysłany.` };
+    }
+    if (clock.totalMinutes < targetMinutes) {
+      return {
+        ok: true,
+        sent: false,
+        reason: `Przed zaplanowaną godziną (${String(sched.send_hour).padStart(2, '0')}:${String(sched.send_minute).padStart(2, '0')}, teraz ${clock.timeStr}).`,
+      };
+    }
+
+    // Atomowa blokada duplikatu na dzisiejszą datę
+    const claimed = await sql`
+      UPDATE bizops_telegram_schedules
+      SET last_sent_date = ${clock.dateStr}, last_sent_at = ${`${clock.dateStr} ${clock.timeStr}`}
+      WHERE id = 'default' AND last_sent_date <> ${clock.dateStr}
+      RETURNING id;
+    `;
+    if (claimed.length === 0) {
+      return { ok: true, sent: false, reason: 'Raport został właśnie wysłany przez inny proces.' };
+    }
+  }
+
+  const reportHtml = await buildCloudDailyTelegramReport(sql, clock.dateStr, clock.timeStr);
+  const sent = await dispatchTelegramMessage(cleanToken, cleanChatId, reportHtml, 'HTML');
+
+  if (!sent.ok) {
+    if (!force) {
+      await sql`
+        UPDATE bizops_telegram_schedules
+        SET last_sent_date = ${sched.last_sent_date || ''}
+        WHERE id = 'default';
+      `;
+    }
+    return { ok: false, sent: false, error: sent.error };
+  }
+
+  if (force) {
+    await sql`
+      UPDATE bizops_telegram_schedules
+      SET last_sent_date = ${clock.dateStr}, last_sent_at = ${`${clock.dateStr} ${clock.timeStr}`}
+      WHERE id = 'default';
+    `;
+  }
+
+  return {
+    ok: true,
+    sent: true,
+    date: clock.dateStr,
+    time: clock.timeStr,
+    chatLabel: sent.chatLabel,
+  };
+}
+
 export default async function handler(
   req: IncomingMessage & { body?: unknown; query?: Record<string, string | string[]> },
   res: ServerResponse
@@ -346,6 +618,72 @@ export default async function handler(
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Błąd pobierania skrzynki Neon.';
         sendJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    if (getAction === 'get_telegram_schedule') {
+      try {
+        const sql = getDb();
+        await ensureTelegramScheduleTable(sql);
+        const rows = await sql`
+          SELECT enabled, bot_token, chat_id, send_hour, send_minute, timezone, last_sent_date, last_sent_at
+          FROM bizops_telegram_schedules
+          WHERE id = 'default'
+          LIMIT 1;
+        `;
+        const row = rows[0] as
+          | {
+              enabled: boolean;
+              bot_token: string;
+              chat_id: string;
+              send_hour: number;
+              send_minute: number;
+              timezone: string;
+              last_sent_date: string;
+              last_sent_at: string;
+            }
+          | undefined;
+        const clock = getZonedClock(row?.timezone || 'Europe/Warsaw');
+        sendJson(res, 200, {
+          success: true,
+          serverClock: clock,
+          schedule: row
+            ? {
+                enabled: Boolean(row.enabled),
+                hasToken: Boolean(row.bot_token),
+                chatId: String(row.chat_id || ''),
+                sendHour: Number(row.send_hour ?? 18),
+                sendMinute: Number(row.send_minute ?? 0),
+                timezone: row.timezone || 'Europe/Warsaw',
+                lastSentDate: String(row.last_sent_date || ''),
+                lastSentAt: String(row.last_sent_at || ''),
+              }
+            : {
+                enabled: false,
+                hasToken: false,
+                chatId: '',
+                sendHour: 18,
+                sendMinute: 0,
+                timezone: 'Europe/Warsaw',
+                lastSentDate: '',
+                lastSentAt: '',
+              },
+        });
+      } catch (err) {
+        sendJson(res, 500, { error: err instanceof Error ? err.message : 'Błąd odczytu harmonogramu.' });
+      }
+      return;
+    }
+
+    if (getAction === 'run_telegram_daily_cron') {
+      try {
+        const sql = getDb();
+        const force = (req.query?.force ?? urlObj.searchParams.get('force')) === '1';
+        const outcome = await executeScheduledTelegramReport(sql, force);
+        sendJson(res, outcome.ok ? 200 : 400, outcome);
+      } catch (err) {
+        sendJson(res, 500, { error: err instanceof Error ? err.message : 'Błąd wykonania harmonogramu Telegram.' });
       }
       return;
     }
@@ -682,11 +1020,8 @@ export default async function handler(
     }
 
     if (action === 'telegram_detect_chat') {
-      const cleanToken = String(body.botToken || body.token || '')
-        .trim()
-        .replace(/^bot/i, '')
-        .replace(/\s+/g, '');
-      if (!/^\d{5,16}:[A-Za-z0-9_-]{20,}$/.test(cleanToken)) {
+      const cleanToken = sanitizeTelegramToken(body.botToken || body.token);
+      if (!isValidTelegramToken(cleanToken)) {
         sendJson(res, 400, {
           error: 'Nieprawidłowy format Telegram Bot Token (oczekiwano np. 7123456789:AAH... z @BotFather).',
         });
@@ -772,15 +1107,12 @@ export default async function handler(
     }
 
     if (action === 'telegram_send') {
-      const cleanToken = String(body.botToken || body.token || '')
-        .trim()
-        .replace(/^bot/i, '')
-        .replace(/\s+/g, '');
+      const cleanToken = sanitizeTelegramToken(body.botToken || body.token);
       const rawChatId = String(body.chatId || '').trim().replace(/\s+/g, '');
       const text = String(body.text || '').trim();
       const parseMode = body.parseMode === 'Markdown' ? 'Markdown' : body.parseMode === 'HTML' ? 'HTML' : undefined;
 
-      if (!/^\d{5,16}:[A-Za-z0-9_-]{20,}$/.test(cleanToken)) {
+      if (!isValidTelegramToken(cleanToken)) {
         sendJson(res, 400, {
           error: 'Nieprawidłowy Telegram Bot Token — wklej pełny token z @BotFather (np. 7123456789:AAH...).',
         });
@@ -791,85 +1123,70 @@ export default async function handler(
         return;
       }
 
-      const tgPost = async (mode?: string) => {
-        const tgRes = await fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: rawChatId,
-            text,
-            ...(mode ? { parse_mode: mode } : {}),
-            disable_web_page_preview: true,
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
-        const tgJson = (await tgRes.json().catch(() => ({}))) as {
-          ok?: boolean;
-          description?: string;
-          error_code?: number;
-          result?: { message_id?: number; chat?: { id?: number; title?: string; username?: string; first_name?: string } };
-        };
-        return { tgRes, tgJson };
-      };
-
-      let { tgRes, tgJson } = await tgPost(parseMode);
-
-      // Jesli Telegram odrzucil formatowanie Markdown/HTML -> ponow jako czysty tekst!
-      if (!tgRes.ok && parseMode && /parse entities/i.test(String(tgJson.description || ''))) {
-        const plain = text.replace(/<[^>]+>/g, '');
-        const retryRes = await fetch(`https://api.telegram.org/bot${cleanToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: rawChatId, text: plain, disable_web_page_preview: true }),
-          signal: AbortSignal.timeout(10000),
-        });
-        tgRes = retryRes;
-        tgJson = (await retryRes.json().catch(() => ({}))) as typeof tgJson;
+      const result = await dispatchTelegramMessage(cleanToken, rawChatId, text, parseMode);
+      if (!result.ok) {
+        sendJson(res, 400, { error: result.error, telegramDescription: result.telegramDescription });
+        return;
       }
+      sendJson(res, 200, result);
+      return;
+    }
 
-      if (!tgRes.ok || !tgJson.ok) {
-        const desc = String(tgJson.description || '');
-        const lower = desc.toLowerCase();
-        let friendly = `Telegram API (${tgRes.status}): ${desc || 'Nieznany błąd'}`;
+    if (action === 'save_telegram_schedule') {
+      const enabled = Boolean(body.enabled);
+      const cleanTokenInput = sanitizeTelegramToken(body.botToken || body.token);
+      const cleanChatId = String(body.chatId || '').trim().replace(/\s+/g, '');
+      const sendHour = Math.max(0, Math.min(23, Math.floor(Number(body.sendHour ?? 18))));
+      const sendMinute = Math.max(0, Math.min(59, Math.floor(Number(body.sendMinute ?? 0))));
+      const timezone = String(body.timezone || 'Europe/Warsaw');
 
-        if (lower.includes('unauthorized')) {
-          friendly = 'Nieprawidłowy Bot Token (Unauthorized). Sprawdź token skopiowany z @BotFather.';
-        } else if (lower.includes("can't send messages to bots")) {
-          friendly =
-            'W polu Chat ID wpisałeś ID samego bota zamiast swojego prywatnego Chat ID! Kliknij przycisk „Wykryj moje Chat ID” powyżej.';
-        } else if (
-          lower.includes('chat not found') ||
-          lower.includes('initiate conversation') ||
-          lower.includes('blocked by the user')
-        ) {
-          let botUrl = '';
-          try {
-            const meR = await fetch(`https://api.telegram.org/bot${cleanToken}/getMe`, {
-              signal: AbortSignal.timeout(4000),
-            });
-            const meJ = (await meR.json()) as { result?: { username?: string } };
-            if (meJ.result?.username) botUrl = `https://t.me/${meJ.result.username}`;
-          } catch {
-            // ignore
-          }
-          friendly = botUrl
-            ? `Telegram (${desc}): nowy bot nie może napisać pierwszy, dopóki nie otworzysz ${botUrl} i nie klikniesz START (/start). Kliknij link, wyślij /start i spróbuj ponownie!`
-            : `Telegram (${desc}): otwórz swojego nowego bota w Telegramie i kliknij START (/start), a potem sprawdź Chat ID przyciskiem „Wykryj moje Chat ID”.`;
-        }
+      const sql = getDb();
+      await ensureTelegramScheduleTable(sql);
 
-        sendJson(res, 400, { error: friendly, telegramDescription: desc });
+      const existing = await sql`
+        SELECT bot_token FROM bizops_telegram_schedules WHERE id = 'default' LIMIT 1;
+      `;
+      const effectiveToken = cleanTokenInput || String(existing[0]?.bot_token || '');
+
+      if (enabled && (!isValidTelegramToken(effectiveToken) || !cleanChatId)) {
+        sendJson(res, 400, {
+          error: 'Aby włączyć automatyczny raport dzienny, uzupełnij najpierw prawidłowy Token bota i Chat ID.',
+        });
         return;
       }
 
+      await sql`
+        INSERT INTO bizops_telegram_schedules (id, enabled, bot_token, chat_id, send_hour, send_minute, timezone, updated_at)
+        VALUES ('default', ${enabled}, ${effectiveToken}, ${cleanChatId}, ${sendHour}, ${sendMinute}, ${timezone}, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          enabled = EXCLUDED.enabled,
+          bot_token = CASE WHEN EXCLUDED.bot_token <> '' THEN EXCLUDED.bot_token ELSE bizops_telegram_schedules.bot_token END,
+          chat_id = EXCLUDED.chat_id,
+          send_hour = EXCLUDED.send_hour,
+          send_minute = EXCLUDED.send_minute,
+          timezone = EXCLUDED.timezone,
+          updated_at = NOW();
+      `;
+
       sendJson(res, 200, {
-        ok: true,
-        messageId: tgJson.result?.message_id || null,
-        chatId: String(tgJson.result?.chat?.id || rawChatId),
-        chatLabel:
-          tgJson.result?.chat?.title ||
-          tgJson.result?.chat?.first_name ||
-          (tgJson.result?.chat?.username ? `@${tgJson.result.chat.username}` : rawChatId),
+        success: true,
+        schedule: {
+          enabled,
+          hasToken: Boolean(effectiveToken),
+          chatId: cleanChatId,
+          sendHour,
+          sendMinute,
+          timezone,
+        },
       });
+      return;
+    }
+
+    if (action === 'run_telegram_daily_cron') {
+      const sql = getDb();
+      const force = Boolean(body.force);
+      const outcome = await executeScheduledTelegramReport(sql, force);
+      sendJson(res, outcome.ok ? 200 : 400, outcome);
       return;
     }
 
