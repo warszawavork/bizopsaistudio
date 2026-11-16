@@ -708,6 +708,26 @@ export function evaluateTallyQuoteFromLiveData(
     `• RAZEM BRUTTO (${vatRate}% VAT): ${formatPln(totalGrossPln)} (dla porównania: z 8% VAT = ${formatPln(altVatGross8Pln)}, z 23% VAT = ${formatPln(altVatGross23Pln)})`,
   ].join('\n');
 
+  const warsawModules = modules * quantity;
+  const warsawTransportGrossPln = 600 * warsawModules * r.dostawaKm;
+  const warsawTransportNetPln = Math.round(warsawTransportGrossPln / 1.23);
+  const slabIncludedAlready = foundation === 'plyta';
+  const extraSlabNetPln = slabIncludedAlready ? 0 : Math.round(footprintM2 * r.fundPlyta * quantity);
+  const warsawSlabReference =
+    km === 0
+      ? {
+          cityLabel: 'Warszawa (ok. 600 km z Przemyśla)',
+          distanceKm: 600,
+          modulesCount: warsawModules,
+          transportGrossPln: warsawTransportGrossPln,
+          extraSlabNetPln,
+          slabIncludedAlready,
+          totalWithWarsawSlabNetPln: totalNetPln + extraSlabNetPln + warsawTransportNetPln,
+          totalWithWarsawSlabGrossPln:
+            totalGrossPln + Math.round(extraSlabNetPln * (1 + vatRate / 100)) + warsawTransportGrossPln,
+        }
+      : null;
+
   return {
     formId: live.formId,
     formName: live.formName,
@@ -725,6 +745,7 @@ export function evaluateTallyQuoteFromLiveData(
     altVatGross23Pln,
     isIllustrativeEstimate,
     assumedSummary,
+    warsawSlabReference,
     missingQuestions,
     formattedQuoteBlock,
   };

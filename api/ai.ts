@@ -77,28 +77,11 @@ const BUILDING_TYPOLOGY_DETECTION = [
 ].join('\n');
 
 const REPLY_STRUCTURE_COMMAND = [
-  'KOMENDA FORMATOWANIA UKŁADU ODPOWIEDZI (BEZWZGLĘDNY WYMÓG ESTETYKI — ZERO ŚCIANY TEKSTU):',
-  '1. KAŻDY element listy (• oraz 1., 2., 3.) MUSI zaczynać się od NOWEJ LINII (\\n). SUROWY ZAKAZ umieszczania dwóch punktorów „•” w tym samym akapicie lub po kropce w tej samej linii!',
-  '2. Używaj czytelnej, profesjonalnej struktury podzielonej pustą linią (\\n\\n) pomiędzy sekcjami:',
-  '   [Powitanie]',
-  '   (pusta linia)',
-  '   [Krótkie odniesienie do zapytania — max 2 zdania]',
-  '   (pusta linia)',
-  '   [Nagłówek sekcji, np. Szczegóły zakresu / Specyfikacja:]',
-  '   • Punkt 1: krótki konkret',
-  '   • Punkt 2: krótki konkret',
-  '   • Punkt 3: krótki konkret',
-  '   (pusta linia)',
-  '   [Sekcja Koszty / VAT / Warunki finansowe:]',
-  '   • Kwota i VAT: ...',
-  '   • Koszty dodatkowe: ...',
-  '   (pusta linia)',
-  '   [Kolejne kroki / Pytania:]',
-  '   1. Pierwsze pytanie lub krok',
-  '   2. Drugie pytanie lub krok',
-  '   (pusta linia)',
-  '   [Podpis]',
-  '3. Zachowaj czystość biznesową (bez surowych znaków ### ani | tabel w treści maila).',
+  'KOMENDA ESTETYKI I RÓŻNORODNOŚCI ODPOWIEDZI (NATURALNY STYL + ZERO ŚCIANY TEKSTU):',
+  '1. KAŻDY element listy (• oraz 1., 2., 3.) MUSI zaczynać się od NOWEJ LINII (\\n). SUROWY ZAKAZ umieszczania dwóch punktorów „•” w tej samej linii!',
+  '2. NIE STOSUJ ZA KAŻDYM RAZEM TEGO SAMEGO SZABLONU! Dynamicznie dopasuj układ, otwarcie i nagłówki do tego, o co pyta klient i w jakim kanale (raz zacznij od bezpośrednich odpowiedzi Q&A, innym razem od krótkiej rekomendacji wariantów lub konkretnych pytań doprecyzowujących). Unikaj powtarzalnych, sztywnych formułek.',
+  '3. Zadbaj o przejrzystość: krótkie akapity rozdzielone pustą linią (\\n\\n), wyraźne listy punktowane tam, gdzie porządkują konkrety, oraz naturalne zakończenie i podpis.',
+  '4. Zachowaj czystość biznesową (bez surowych znaków ### ani | tabel w treści maila).',
 ].join('\n');
 
 function formatStructuredReplyText(raw: string): string {
@@ -1435,15 +1418,18 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         includeMiniQuote
           ? activeTallyQuote && activeTallyQuote.breakdown.length > 0
             ? [
-                'ROZDZIAŁ ODPOWIEDZI OD KOSZTORYSU TALLY ORAZ PROCEDURA PYTAŃ Z KAFELKÓW:',
-                '1. Odpowiedz najpierw konkretnie i ekspercko na wszystkie pytania klienta na podstawie KAFELKÓW BAZY WIEDZY FIRMY (konstrukcja, ocieplenie ścian/sufitu, płyta fundamentowa, czas realizacji, harmonogram płatności, VAT 23% przy najmie, porównanie powierzchni po podłodze vs użytkowej).',
-                '2. Następnie utwórz wyraźną sekcję w punktach (każdy punktor od NOWEJ linii): „Aby przygotować dla Państwa wiążącą, dokładną wycenę, prosimy o odpowiedź na poniższe pytania:” — wypisz brakujące pytania z Bazy Wiedzy (kafelków) oraz poniższej listy z Tally.',
-                '3. NIE wypisuj ręcznie w `replyBody` pełnej tabeli cen ani sum netto/brutto — system automatycznie dopina wyliczony przez Tally kosztorys (lub handlowiec przełącza go przyciskiem).',
+                'ROZDZIAŁ ODPOWIEDZI OD KOSZTORYSU TALLY ORAZ SWOBODNE DOPRECYZOWANIE PYTAŃ:',
+                '1. Odpowiedz najpierw naturalnie i konkretnie na wszystkie pytania klienta na podstawie KAFELKÓW BAZY WIEDZY FIRMY (konstrukcja, ocieplenie, płyta fundamentowa, czas realizacji, płatności, VAT 23% przy najmie, układ powierzchni).',
+                '2. Śmiało podpytaj klienta o wszystkie brakujące szczegóły potrzebne do finalnej oferty (powierzchnia zabudowy, poddasze vs pełne piętro, miejscowość dostawy, standard wykończenia, architekt, finansowanie) — w naturalnej, zróżnicowanej formie dopasowanej do tej konkretnej rozmowy.',
+                '3. NIE wypisuj ręcznie w `replyBody` pełnej tabeli cen ani sum netto/brutto — nasz system na samym końcu wiadomości (tuż przed podpisem) automatycznie dopnie orientacyjną kalkulację' +
+                  (activeTallyQuote.warsawSlabReference
+                    ? ' (wraz z przykładowym kosztem realizacji z płytą fundamentową i dostawą do Warszawy).'
+                    : '.'),
                 activeTallyQuote.isIllustrativeEstimate
-                  ? `4. W jednym zdaniu zaznacz, że załączona kalkulacja ma charakter PRZYKŁADOWY i POMOCNICZY (niepotwierdzona przez klienta — ${activeTallyQuote.assumedSummary}) i zostanie uściślona po odpowiedzi na powyższe pytania.`
-                  : '4. Krótko wspomnij, że szczegółowa rozpiska kosztów znajduje się poniżej.',
+                  ? `4. Jednym zwięzłym zdaniem przed zakończeniem wskaż, że poniższa kalkulacja ma charakter PRZYKŁADOWY i POMOCNICZY (${activeTallyQuote.assumedSummary}) i zostanie doprecyzowana po odpowiedzi na powyższe pytania.`
+                  : '4. Jednym zdaniem wskaż, że podsumowanie wyceny zamieszczono na końcu wiadomości.',
                 activeTallyQuote.missingQuestions.length > 0
-                  ? `\nBRAKUJĄCE PYTANIA Z TALLY / KAFELKÓW DO ZADANIA KLIENTOWI:\n${activeTallyQuote.missingQuestions.map((q) => `- ${q}`).join('\n')}`
+                  ? `\nPYTANIA Z TALLY / KAFELKÓW, O KTÓRE WARTO PODPYTAĆ KLIENTA:\n${activeTallyQuote.missingQuestions.map((q) => `- ${q}`).join('\n')}`
                   : '',
               ]
                 .filter(Boolean)
@@ -1491,7 +1477,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
         systemInstruction: { parts: [{ text: systemText }] },
         contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         generationConfig: {
-          temperature: 0.25,
+          temperature: 0.5,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'OBJECT',

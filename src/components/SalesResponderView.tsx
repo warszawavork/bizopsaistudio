@@ -8,6 +8,8 @@ import {
   Copy,
   Edit3,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   Flame,
   Globe,
@@ -18,6 +20,7 @@ import {
   Link2,
   Loader2,
   Mail,
+  MapPin,
   MessageCircle,
   MessageSquare,
   MessageSquarePlus,
@@ -258,6 +261,8 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [editableBody, setEditableBody] = useState<string>('');
   const [baseReplyBody, setBaseReplyBody] = useState<string>('');
   const [replyOutputMode, setReplyOutputMode] = useState<'combined' | 'quote_only' | 'reply_only'>('reply_only');
+  const [hideItemizedPrices, setHideItemizedPrices] = useState<boolean>(false);
+  const [includeWarsawRef, setIncludeWarsawRef] = useState<boolean>(true);
   const [activeDraftLang, setActiveDraftLang] = useState<DraftLangCode>('pl');
   const [draftCache, setDraftCache] = useState<Partial<Record<DraftLangCode, { subject: string; body: string }>>>({});
   const [draftDirtyLang, setDraftDirtyLang] = useState<DraftLangCode | null>(null);
@@ -514,7 +519,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
         quote && quote.breakdown.length > 0 ? 'combined' : 'reply_only';
       const initialBody =
         defaultMode === 'combined' && quote
-          ? stitchReplyAndTallyQuote(formattedBase, quote, baseLang)
+          ? stitchReplyAndTallyQuote(formattedBase, quote, baseLang, {
+              hideItemizedPrices,
+              includeWarsawRef,
+            })
           : formattedBase;
 
       setBaseReplyBody(formattedBase);
@@ -1024,17 +1032,22 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     mode: 'combined' | 'quote_only' | 'reply_only',
     quoteOverride: TallyQuoteEvaluation | null = integratedTallyQuote,
     baseOverride: string = baseReplyBody,
-    langOverride: DraftLangCode = activeDraftLang
+    langOverride: DraftLangCode = activeDraftLang,
+    optsOverride?: { hideItemizedPrices?: boolean; includeWarsawRef?: boolean }
   ) => {
     setReplyOutputMode(mode);
+    const fmtOpts = {
+      hideItemizedPrices: optsOverride?.hideItemizedPrices ?? hideItemizedPrices,
+      includeWarsawRef: optsOverride?.includeWarsawRef ?? includeWarsawRef,
+    };
     let nextBody = baseOverride;
     if (mode === 'quote_only') {
       nextBody =
         quoteOverride && quoteOverride.breakdown.length > 0
-          ? formatPureTallyQuoteText(quoteOverride, langOverride)
+          ? formatPureTallyQuoteText(quoteOverride, langOverride, fmtOpts)
           : '';
     } else if (mode === 'combined' && quoteOverride && quoteOverride.breakdown.length > 0) {
-      nextBody = stitchReplyAndTallyQuote(baseOverride, quoteOverride, langOverride);
+      nextBody = stitchReplyAndTallyQuote(baseOverride, quoteOverride, langOverride, fmtOpts);
     }
     setEditableBody(nextBody);
     setDraftDirtyLang(null);
@@ -1111,8 +1124,31 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
       nextFlag
     );
     setIntegratedTallyQuote(updated);
-    if (replyOutputMode !== 'reply_only') {
-      applyReplyOutputMode(replyOutputMode, updated);
+    const targetMode = replyOutputMode === 'reply_only' ? 'combined' : replyOutputMode;
+    applyReplyOutputMode(targetMode, updated);
+  };
+
+  const handleToggleHideItemizedPrices = () => {
+    const nextHide = !hideItemizedPrices;
+    setHideItemizedPrices(nextHide);
+    if (integratedTallyQuote && integratedTallyQuote.breakdown.length > 0) {
+      const targetMode = replyOutputMode === 'reply_only' ? 'combined' : replyOutputMode;
+      applyReplyOutputMode(targetMode, integratedTallyQuote, baseReplyBody, activeDraftLang, {
+        hideItemizedPrices: nextHide,
+        includeWarsawRef,
+      });
+    }
+  };
+
+  const handleToggleWarsawRef = () => {
+    const nextShow = !includeWarsawRef;
+    setIncludeWarsawRef(nextShow);
+    if (integratedTallyQuote && integratedTallyQuote.breakdown.length > 0) {
+      const targetMode = replyOutputMode === 'reply_only' ? 'combined' : replyOutputMode;
+      applyReplyOutputMode(targetMode, integratedTallyQuote, baseReplyBody, activeDraftLang, {
+        hideItemizedPrices,
+        includeWarsawRef: nextShow,
+      });
     }
   };
 
@@ -2447,6 +2483,34 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                       <>
                         <button
                           type="button"
+                          onClick={handleToggleHideItemizedPrices}
+                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold transition ${
+                            hideItemizedPrices
+                              ? 'bg-slate-900 text-white shadow-2xs'
+                              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                          title="Ukrywa ceny pojedynczych pozycji w wiadomości — zostawia zakres oraz wyłącznie cenę końcową"
+                        >
+                          {hideItemizedPrices ? <EyeOff className="h-3 w-3 text-amber-300" /> : <Eye className="h-3 w-3" />}
+                          {hideItemizedPrices ? 'Cenniki ukryte (tylko finał)' : 'Ukryj cenniki'}
+                        </button>
+                        {integratedTallyQuote.warsawSlabReference && (
+                          <button
+                            type="button"
+                            onClick={handleToggleWarsawRef}
+                            className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold transition ${
+                              includeWarsawRef
+                                ? 'border border-emerald-400 bg-emerald-100 text-emerald-900'
+                                : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                            }`}
+                            title="Dodaje na samym końcu przykładowy koszt domu na płycie fundamentowej z dostawą do Warszawy (~600 km z Przemyśla)"
+                          >
+                            <MapPin className="h-3 w-3" />
+                            Warszawa + płyta
+                          </button>
+                        )}
+                        <button
+                          type="button"
                           onClick={handleToggleIllustrativeNotice}
                           className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-extrabold transition ${
                             integratedTallyQuote.isIllustrativeEstimate
@@ -2521,7 +2585,7 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           <span className="text-[11px] font-extrabold text-emerald-800 whitespace-nowrap">
-                            {item.netPln.toLocaleString('pl-PL')} zł
+                            {hideItemizedPrices ? 'w cenie końcowej' : `${item.netPln.toLocaleString('pl-PL')} zł`}
                           </span>
                           <button
                             type="button"

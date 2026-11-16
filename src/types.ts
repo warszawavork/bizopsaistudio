@@ -84,6 +84,16 @@ export interface TallyQuoteEvaluation {
   altVatGross23Pln: number;
   isIllustrativeEstimate: boolean;
   assumedSummary: string;
+  warsawSlabReference?: {
+    cityLabel: string;
+    distanceKm: number;
+    modulesCount: number;
+    transportGrossPln: number;
+    extraSlabNetPln: number;
+    slabIncludedAlready: boolean;
+    totalWithWarsawSlabNetPln: number;
+    totalWithWarsawSlabGrossPln: number;
+  } | null;
   missingQuestions: string[];
   formattedQuoteBlock: string;
 }
