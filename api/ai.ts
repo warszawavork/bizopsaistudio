@@ -1301,6 +1301,75 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
       return;
     }
 
+    if (action === 'translate_reply') {
+      const subject = String(body.subject || '').trim();
+      const bodyText = String(body.body || '').trim();
+      const targetLanguage = String(body.targetLanguage || 'pl').toLowerCase();
+
+      if (!bodyText) {
+        sendJson(res, 400, { error: 'Brak treści odpowiedzi do przetłumaczenia.' });
+        return;
+      }
+
+      const targetDesc =
+        targetLanguage === 'en'
+          ? 'Business English (profesjonalny język angielski B2B)'
+          : targetLanguage === 'no'
+            ? 'Norwegian (język norweski Bokmål)'
+            : targetLanguage === 'de'
+              ? 'Business German (język niemiecki B2B)'
+              : 'Polish (naturalny, profesjonalny język polski B2B)';
+
+      const systemText = [
+        `Jesteś precyzyjnym tłumaczem biznesowym B2B. Przetłumacz poniższy temat oraz treść wiadomości 1:1 na język docelowy: ${targetDesc}.`,
+        'ZASADY KRYTYCZNE (ZERO ZMIAN MERYTORYCZNYCH):',
+        '1. ZACHOWAJ IDENTYCZNE wszystkie liczby, ceny, stawki VAT (np. 8%, 23%), metraże, daty, adresy URL, nazwy modeli i dane kontaktowe.',
+        '2. ZACHOWAJ IDENTYCZNĄ strukturę i podział na sekcje: powitanie od nowej linii, każdy punktor „•” od nowej linii, punkty numerowane „1.”, „2.” od nowej linii oraz stopka podpisu na dole.',
+        '3. Nie dopisuj nowych akapitów, nie skracaj oferty i nie zmieniaj sensu biznesowego — przetłumacz wiernie i elegancko.',
+      ].join('\n');
+
+      const result = await callGemini(apiKey, {
+        systemInstruction: { parts: [{ text: systemText }] },
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: `TEMAT:\n${subject || '(brak tematu)'}\n\nTREŚĆ WIADOMOŚCI:\n${bodyText}`,
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 3072,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              subject: { type: 'STRING' },
+              replyBody: { type: 'STRING' },
+            },
+            required: ['subject', 'replyBody'],
+          },
+        },
+      });
+
+      const parsed = parseGeminiJson<{ subject?: string; replyBody?: string }>(result.text);
+      const formattedBody = formatStructuredReplyText(parsed.replyBody || bodyText);
+
+      sendJson(res, 200, {
+        success: true,
+        subject: (parsed.subject || subject).trim(),
+        replyBody: formattedBody,
+        targetLanguage,
+        model: result.model || GEMINI_MODEL,
+        usage: result.usage,
+        latencyMs: Date.now() - startedAt,
+      });
+      return;
+    }
+
     if (action === 'compare_docs') {
       const companyName = String(body.companyName || 'Firma');
       const tiles = (Array.isArray(body.knowledgeTiles) ? body.knowledgeTiles : []) as KnowledgeTileInput[];

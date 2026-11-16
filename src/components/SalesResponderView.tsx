@@ -54,6 +54,7 @@ import {
   saveCloudWorkspaceKey,
   sendGmailBridge,
   sendWhatsAppMessage,
+  translateSalesReply,
 } from '../utils/apiClient';
 import { copyRichEmailToClipboard, formatStructuredReplyText } from '../utils/emailExport';
 import { idbGetWorkspaceItem } from '../utils/offlineDb';
@@ -146,6 +147,16 @@ const DEFAULT_OBJECTIONS: ObjectionPlaybookItem[] = [
   },
 ];
 
+type DraftLangCode = 'pl' | 'en' | 'no' | 'de';
+
+function detectDraftLangCode(raw?: string): DraftLangCode {
+  const s = (raw || '').toLowerCase();
+  if (s.includes('eng') || s.includes('ang') || s === 'en') return 'en';
+  if (s.includes('nor') || s === 'no' || s === 'nb') return 'no';
+  if (s.includes('ger') || s.includes('niem') || s === 'de') return 'de';
+  return 'pl';
+}
+
 export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   preset,
   tiles,
@@ -228,6 +239,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   const [editableSubject, setEditableSubject] = useState<string>('');
   const [editableBody, setEditableBody] = useState<string>('');
+  const [activeDraftLang, setActiveDraftLang] = useState<DraftLangCode>('pl');
+  const [draftCache, setDraftCache] = useState<Partial<Record<DraftLangCode, { subject: string; body: string }>>>({});
+  const [draftDirtyLang, setDraftDirtyLang] = useState<DraftLangCode | null>(null);
+  const [translatingLang, setTranslatingLang] = useState<DraftLangCode | null>(null);
   const [copiedMode, setCopiedMode] = useState<'all' | 'body' | 'rich' | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [replyHistory, setReplyHistory] = useState<ReplyHistoryItem[]>(() => {
@@ -335,11 +350,76 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
 
   useEffect(() => {
     if (latestReply) {
+      const formattedBody = formatStructuredReplyText(latestReply.replyBody);
+      const baseLang = detectDraftLangCode(latestReply.detectedLanguage);
       setEditableSubject(latestReply.subject);
-      setEditableBody(formatStructuredReplyText(latestReply.replyBody));
+      setEditableBody(formattedBody);
+      setActiveDraftLang(baseLang);
+      setDraftCache({ [baseLang]: { subject: latestReply.subject, body: formattedBody } });
+      setDraftDirtyLang(null);
       setSavedGapToKb(false);
     }
   }, [latestReply]);
+
+  const handleSwitchDraftLanguage = async (targetLang: DraftLangCode) => {
+    if (translatingLang || loading || !editableBody.trim()) return;
+    if (targetLang === activeDraftLang && draftDirtyLang !== targetLang) return;
+
+    const currentSaved = { subject: editableSubject, body: editableBody };
+
+    // Jeśli doradca nie edytował obecnej wersji, a wersja docelowa jest już w pamięci -> 0 ms przełączenie!
+    const existingTarget = draftCache[targetLang];
+    if (!draftDirtyLang && existingTarget) {
+      setDraftCache((prev) => ({ ...prev, [activeDraftLang]: currentSaved }));
+      setEditableSubject(existingTarget.subject);
+      setEditableBody(existingTarget.body);
+      setActiveDraftLang(targetLang);
+      setChannelStatus(
+        targetLang === 'pl'
+          ? 'Przełączono podgląd do czytania po polsku (PL) — 0 ms.'
+          : `Przełączono na wersję gotową do wysyłki (${targetLang.toUpperCase()}) — 0 ms.`
+      );
+      return;
+    }
+
+    setTranslatingLang(targetLang);
+    setError(null);
+    try {
+      const res = await translateSalesReply({
+        subject: editableSubject,
+        body: editableBody,
+        targetLanguage: targetLang,
+      });
+      const translated = { subject: res.subject, body: formatStructuredReplyText(res.replyBody) };
+      setDraftCache((prev) => ({
+        ...prev,
+        [activeDraftLang]: currentSaved,
+        [targetLang]: translated,
+      }));
+      setEditableSubject(translated.subject);
+      setEditableBody(translated.body);
+      setActiveDraftLang(targetLang);
+      setDraftDirtyLang(null);
+      setChannelStatus(
+        targetLang === 'pl'
+          ? `Przetłumaczono wiernie 1:1 na polski (PL) w ${res.latencyMs} ms — zachowano wszystkie liczby i formatowanie.`
+          : `Przełączono i przetłumaczono wiernie na ${targetLang.toUpperCase()} w ${res.latencyMs} ms — gotowe do wysyłki!`
+      );
+      onLogAiCall({
+        action: 'responder',
+        latencyMs: res.latencyMs,
+        promptTokens: res.usage.promptTokens,
+        candidatesTokens: res.usage.candidatesTokens,
+        totalTokens: res.usage.totalTokens,
+        status: 'success',
+        summary: `Tłumaczenie 1:1 odpowiedzi na ${targetLang.toUpperCase()}`,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Nie udało się przetłumaczyć odpowiedzi.');
+    } finally {
+      setTranslatingLang(null);
+    }
+  };
 
   const activeTilesCount = tiles.filter((t) => t.enabled).length;
 
@@ -1617,30 +1697,78 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                 <input
                   type="text"
                   value={editableSubject}
-                  onChange={(e) => setEditableSubject(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEditableSubject(val);
+                    setDraftDirtyLang(activeDraftLang);
+                    setDraftCache((prev) => ({
+                      ...prev,
+                      [activeDraftLang]: { subject: val, body: editableBody },
+                    }));
+                  }}
                   className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-900 outline-none focus:border-indigo-500 focus:bg-white"
                 />
               </div>
 
               {/* Editable Body */}
               <div>
-                <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
                     Proponowana odpowiedź dla klienta
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setEditableBody((prev) => formatStructuredReplyText(prev))}
-                    className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-2 py-0.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100 transition"
-                    title="Rozdziel punktory i sekcje do czytelnego układu akapit po akapicie"
-                  >
-                    Uporządkuj punktację
-                  </button>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-100 p-0.5">
+                      <button
+                        type="button"
+                        disabled={Boolean(translatingLang) || loading}
+                        onClick={() => void handleSwitchDraftLanguage('pl')}
+                        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                          activeDraftLang === 'pl'
+                            ? 'bg-white text-indigo-700 shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                        title="Przetłumacz 1:1 na polski (lub przełącz w 0 ms), aby doradca mógł szybko przeczytać i sprawdzić treść"
+                      >
+                        {translatingLang === 'pl' && <Loader2 className="h-3 w-3 animate-spin" />}
+                        🇵🇱 Czytaj PL {draftCache.pl && activeDraftLang !== 'pl' && !draftDirtyLang ? '✓' : ''}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(translatingLang) || loading}
+                        onClick={() => void handleSwitchDraftLanguage('en')}
+                        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                          activeDraftLang === 'en'
+                            ? 'bg-white text-indigo-700 shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                        title="Przełącz lub przetłumacz wiernie na angielski (EN) gotowy do wysłania"
+                      >
+                        {translatingLang === 'en' && <Loader2 className="h-3 w-3 animate-spin" />}
+                        🇬🇧 Wersja EN {draftCache.en && activeDraftLang !== 'en' && !draftDirtyLang ? '✓' : ''}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditableBody((prev) => formatStructuredReplyText(prev))}
+                      className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-2 py-1 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100 transition"
+                      title="Rozdziel punktory i sekcje do czytelnego układu akapit po akapicie"
+                    >
+                      Uporządkuj punktację
+                    </button>
+                  </div>
                 </div>
                 <textarea
                   rows={16}
                   value={editableBody}
-                  onChange={(e) => setEditableBody(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEditableBody(val);
+                    setDraftDirtyLang(activeDraftLang);
+                    setDraftCache((prev) => ({
+                      ...prev,
+                      [activeDraftLang]: { subject: editableSubject, body: val },
+                    }));
+                  }}
                   className="w-full rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:bg-white font-sans whitespace-pre-wrap"
                 />
               </div>
@@ -1717,23 +1845,27 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                   </button>
                   <button
                     type="button"
-                    disabled={loading}
-                    onClick={() =>
-                      void handleGenerate(clientMessage, advisorNotes, 'en', tone)
-                    }
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50"
+                    disabled={loading || Boolean(translatingLang)}
+                    onClick={() => void handleSwitchDraftLanguage('en')}
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                      activeDraftLang === 'en'
+                        ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-indigo-300 hover:bg-indigo-50'
+                    }`}
                   >
-                    Przetłumacz na angielski (EN)
+                    {translatingLang === 'en' ? 'Tłumaczę na EN...' : 'Przetłumacz 1:1 na angielski (EN)'}
                   </button>
                   <button
                     type="button"
-                    disabled={loading}
-                    onClick={() =>
-                      void handleGenerate(clientMessage, advisorNotes, 'pl', tone)
-                    }
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50"
+                    disabled={loading || Boolean(translatingLang)}
+                    onClick={() => void handleSwitchDraftLanguage('pl')}
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                      activeDraftLang === 'pl'
+                        ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-indigo-300 hover:bg-indigo-50'
+                    }`}
                   >
-                    Przetłumacz na polski (PL)
+                    {translatingLang === 'pl' ? 'Tłumaczę na PL...' : 'Przetłumacz 1:1 na polski (PL)'}
                   </button>
                 </div>
               </div>

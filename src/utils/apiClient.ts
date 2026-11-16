@@ -328,6 +328,22 @@ export async function generateSalesReply(params: {
   return postJson('/api/ai', { action: 'reply_assistant', ...params });
 }
 
+export async function translateSalesReply(params: {
+  subject: string;
+  body: string;
+  targetLanguage: 'pl' | 'en' | 'no' | 'de';
+}): Promise<{
+  success: boolean;
+  subject: string;
+  replyBody: string;
+  targetLanguage: string;
+  model: string;
+  latencyMs: number;
+  usage: { promptTokens: number; candidatesTokens: number; totalTokens: number };
+}> {
+  return postJson('/api/ai', { action: 'translate_reply', ...params });
+}
+
 export async function runDocumentComparison(params: {
   companyName: string;
   language?: AppLanguage;
