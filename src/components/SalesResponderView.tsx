@@ -71,6 +71,7 @@ import {
   sendGmailBridge,
   sendWhatsAppMessage,
   translateSalesReply,
+  calculateDeliveryDistance,
 } from '../utils/apiClient';
 import { copyRichEmailToClipboard, formatStructuredReplyText } from '../utils/emailExport';
 import { idbGetWorkspaceItem, idbSaveWorkspaceItem } from '../utils/offlineDb';
@@ -305,6 +306,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
   const [integratingTally, setIntegratingTally] = useState<boolean>(false);
   const [recalculatingTally, setRecalculatingTally] = useState<boolean>(false);
   const [manualAreaInput, setManualAreaInput] = useState<string>('50');
+  const [deliveryAddressInput, setDeliveryAddressInput] = useState<string>('');
+  const [deliveryCalcLoading, setDeliveryCalcLoading] = useState<boolean>(false);
+  const [deliveryCalcInfo, setDeliveryCalcInfo] = useState<string | null>(null);
+  const [deliveryCalcError, setDeliveryCalcError] = useState<string | null>(null);
   const deletedChatIdsRef = useRef<Set<string>>(new Set());
   const recalcSeqRef = useRef<number>(0);
 
@@ -1259,16 +1264,38 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
     if (!integratedTallyQuote) return;
     const parsed = Math.round(Number(manualAreaInput));
     const currentArea = Math.round(integratedTallyQuote.input.areaM2 || 0);
-    if (!Number.isFinite(parsed) || parsed < 15 || parsed > 300 || parsed === currentArea) return;
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 200 || parsed === currentArea) return;
     const timer = window.setTimeout(() => {
       void handleAdjustIntegratedQuoteParams({
         areaM2: parsed,
         areaEstimatedByBot: false,
         areaIsTotalUsable: false,
       });
-    }, 380);
+    }, 320);
     return () => window.clearTimeout(timer);
   }, [manualAreaInput]);
+
+  const handleCalculateDeliveryFromPrzemysl = async () => {
+    const dest = deliveryAddressInput.trim();
+    if (!dest) {
+      setDeliveryCalcError('Wpisz adres lub kod pocztowy klienta (np. 00-001 Warszawa).');
+      return;
+    }
+    setDeliveryCalcLoading(true);
+    setDeliveryCalcError(null);
+    setDeliveryCalcInfo(null);
+    try {
+      const res = await calculateDeliveryDistance(dest);
+      setDeliveryCalcInfo(`Przemyśl → ${res.destinationAddress}: ${res.distanceKm} km${res.durationText ? ` (${res.durationText})` : ''}`);
+      await handleAdjustIntegratedQuoteParams({
+        deliveryKm: res.distanceKm,
+      });
+    } catch (err) {
+      setDeliveryCalcError(err instanceof Error ? err.message : 'Nie udało się obliczyć trasy z Przemyśla.');
+    } finally {
+      setDeliveryCalcLoading(false);
+    }
+  };
 
   const handleCreateDealFromIntegratedQuote = () => {
     if (!integratedTallyQuote || !onCreateCrmDeal) return;
@@ -2722,10 +2749,10 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                           Parametry domku:
                         </span>
 
-                        {/* Metraż podstawy (m²) */}
-                        <div className="flex items-center gap-1">
+                        {/* Metraż podstawy (0–200 m²) */}
+                        <div className="flex flex-wrap items-center gap-1">
                           <span className="text-[10px] font-semibold text-slate-500 mr-0.5">Metraż:</span>
-                          {[35, 50, 70, 100].map((m2) => {
+                          {[25, 35, 50, 70, 100, 140].map((m2) => {
                             const isCurrent = Math.round(integratedTallyQuote.input.areaM2 || 0) === m2;
                             return (
                               <button
@@ -2751,15 +2778,25 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                           <div className="flex items-center rounded-lg border border-slate-200 bg-slate-50 px-1.5 py-0.5">
                             <input
                               type="number"
-                              min={15}
-                              max={300}
+                              min={0}
+                              max={200}
                               value={manualAreaInput}
                               onChange={(e) => setManualAreaInput(e.target.value)}
-                              className="w-10 bg-transparent text-center text-[10px] font-bold text-slate-900 outline-none"
-                              title="Wpisz własny metraż podstawy w m² — przeliczy się automatycznie"
+                              className="w-11 bg-transparent text-center text-[10px] font-bold text-slate-900 outline-none"
+                              title="Wpisz dowolny metraż podstawy od 0 do 200 m² — przeliczy się automatycznie"
                             />
                             <span className="text-[10px] font-semibold text-slate-400">m²</span>
                           </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={200}
+                            step={1}
+                            value={Math.max(0, Math.min(200, Math.round(Number(manualAreaInput) || 0)))}
+                            onChange={(e) => setManualAreaInput(e.target.value)}
+                            className="w-24 accent-emerald-600 cursor-pointer ml-1"
+                            title="Suwak metrażu 0–200 m²"
+                          />
                         </div>
 
                         {/* Kondygnacja */}
@@ -2831,6 +2868,60 @@ export const SalesResponderView: React.FC<SalesResponderViewProps> = ({
                             </button>
                           </div>
                         </div>
+                      </div>
+
+                      {/* Dostawa zawsze liczona z m. Przemyśl (Google Maps po adresie / kodzie pocztowym) */}
+                      <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-100">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                          <MapPin className="h-3 w-3 text-emerald-600" />
+                          Dostawa z Przemyśla:
+                        </span>
+                        <div className="flex flex-1 min-w-[200px] max-w-sm items-center gap-1.5">
+                          <input
+                            type="text"
+                            value={deliveryAddressInput}
+                            onChange={(e) => setDeliveryAddressInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                void handleCalculateDeliveryFromPrzemysl();
+                              }
+                            }}
+                            placeholder="Adres lub kod pocztowy (np. 00-001 Warszawa)"
+                            className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-900 placeholder:text-slate-400 outline-none focus:border-emerald-400 focus:bg-white"
+                          />
+                          <button
+                            type="button"
+                            disabled={deliveryCalcLoading}
+                            onClick={() => void handleCalculateDeliveryFromPrzemysl()}
+                            className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                            title="Oblicz dokładną trasę drogową z Przemyśla przez Google Maps"
+                          >
+                            {deliveryCalcLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <MapPin className="h-3 w-3" />}
+                            Oblicz trasę
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5">
+                          <input
+                            type="number"
+                            min={0}
+                            max={3000}
+                            value={Math.round(integratedTallyQuote.input.deliveryKm || 0)}
+                            onChange={(e) => {
+                              const km = Math.max(0, Math.min(3000, Math.round(Number(e.target.value) || 0)));
+                              void handleAdjustIntegratedQuoteParams({ deliveryKm: km });
+                            }}
+                            className="w-12 bg-transparent text-center text-[10px] font-bold text-slate-900 outline-none"
+                            title="Dystans w km z Przemyśla (możesz też wpisać ręcznie)"
+                          />
+                          <span className="text-[10px] font-semibold text-slate-500">km</span>
+                        </div>
+                        {deliveryCalcInfo && (
+                          <span className="text-[10px] font-semibold text-emerald-700">{deliveryCalcInfo}</span>
+                        )}
+                        {deliveryCalcError && (
+                          <span className="text-[10px] font-semibold text-rose-600">{deliveryCalcError}</span>
+                        )}
                       </div>
 
                       {recalculatingTally && (

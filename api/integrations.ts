@@ -1195,6 +1195,73 @@ export default async function handler(
       return;
     }
 
+    if (action === 'calculate_delivery_distance') {
+      const destination = String(body.destination || '').trim();
+      if (!destination || destination.length < 2) {
+        sendJson(res, 400, { error: 'Podaj adres lub kod pocztowy klienta (np. 00-001 Warszawa).' });
+        return;
+      }
+
+      const apiKey = String(process.env.GOOGLE_MAPS_API_KEY || '').trim();
+      if (!apiKey) {
+        sendJson(res, 400, {
+          error: 'Brak zmiennej GOOGLE_MAPS_API_KEY na Vercelu. Możesz wpisać kilometry ręcznie.',
+          missingKey: true,
+        });
+        return;
+      }
+
+      const destQuery = /polsk|poland/i.test(destination) ? destination : `${destination}, Polska`;
+      const url = new URL('https://maps.googleapis.com/maps/api/distancematrix/json');
+      url.searchParams.set('origins', 'Przemyśl, Polska');
+      url.searchParams.set('destinations', destQuery);
+      url.searchParams.set('mode', 'driving');
+      url.searchParams.set('language', 'pl');
+      url.searchParams.set('region', 'pl');
+      url.searchParams.set('key', apiKey);
+
+      const gmRes = await fetch(url.toString());
+      const gmData = (await gmRes.json().catch(() => ({}))) as {
+        status?: string;
+        error_message?: string;
+        origin_addresses?: string[];
+        destination_addresses?: string[];
+        rows?: Array<{
+          elements?: Array<{
+            status?: string;
+            distance?: { value: number; text: string };
+            duration?: { value: number; text: string };
+          }>;
+        }>;
+      };
+
+      if (!gmRes.ok || gmData.status !== 'OK') {
+        sendJson(res, 400, {
+          error: gmData.error_message || `Błąd Google Maps API (${gmData.status || gmRes.status}).`,
+        });
+        return;
+      }
+
+      const el = gmData.rows?.[0]?.elements?.[0];
+      if (!el || el.status !== 'OK' || !el.distance) {
+        sendJson(res, 400, {
+          error: 'Nie znaleziono trasy drogowej z Przemyśla do podanego adresu/kodu.',
+        });
+        return;
+      }
+
+      const distanceKm = Math.max(1, Math.round(el.distance.value / 1000));
+      sendJson(res, 200, {
+        success: true,
+        distanceKm,
+        distanceText: el.distance.text,
+        durationText: el.duration?.text || '',
+        originAddress: gmData.origin_addresses?.[0] || 'Przemyśl, Polska',
+        destinationAddress: gmData.destination_addresses?.[0] || destination,
+      });
+      return;
+    }
+
     sendJson(res, 400, { error: `Nieznana akcja integracji: ${action}` });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Błąd połączenia z zewnętrznym API.';

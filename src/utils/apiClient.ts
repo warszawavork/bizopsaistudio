@@ -309,6 +309,20 @@ export async function runAgentWorkflow(params: {
   return postJson('/api/ai', { action: 'workflow', ...params });
 }
 
+export async function calculateDeliveryDistance(destination: string): Promise<{
+  success: boolean;
+  distanceKm: number;
+  distanceText: string;
+  durationText: string;
+  originAddress: string;
+  destinationAddress: string;
+}> {
+  return postJson('/api/integrations', {
+    action: 'calculate_delivery_distance',
+    destination,
+  });
+}
+
 export async function generateSalesReply(params: {
   companyName: string;
   companyIndustry: string;
