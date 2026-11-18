@@ -1155,6 +1155,10 @@ export default async function handler(
         return;
       }
 
+      const clock = getZonedClock(timezone);
+      const targetMinutes = sendHour * 60 + sendMinute;
+      const shouldResetTodayLock = enabled && targetMinutes > clock.totalMinutes;
+
       await sql`
         INSERT INTO bizops_telegram_schedules (id, enabled, bot_token, chat_id, send_hour, send_minute, timezone, updated_at)
         VALUES ('default', ${enabled}, ${effectiveToken}, ${cleanChatId}, ${sendHour}, ${sendMinute}, ${timezone}, NOW())
@@ -1165,6 +1169,7 @@ export default async function handler(
           send_hour = EXCLUDED.send_hour,
           send_minute = EXCLUDED.send_minute,
           timezone = EXCLUDED.timezone,
+          last_sent_date = CASE WHEN ${shouldResetTodayLock} THEN '' ELSE bizops_telegram_schedules.last_sent_date END,
           updated_at = NOW();
       `;
 
