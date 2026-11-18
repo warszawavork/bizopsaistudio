@@ -8,12 +8,14 @@ export interface UiDictionary {
   studioProLabel: string;
   tabs: {
     responder: string;
+    calculator: string;
     audit: string;
     knowledge: string;
     chat: string;
   };
   tabDescriptions: {
     responder: string;
+    calculator: string;
     audit: string;
     knowledge: string;
     chat: string;
@@ -65,12 +67,14 @@ export const UI_TEXT: Record<AppLanguage, UiDictionary> = {
     studioProLabel: 'Studio Pro',
     tabs: {
       responder: 'Asystent Odpowiedzi',
+      calculator: 'Asystent Kalkulacji',
       audit: 'Czytnik Dokumentów',
       knowledge: 'Baza Wiedzy',
       chat: 'Czat z Wiedzą',
     },
     tabDescriptions: {
       responder: 'Skrzynka leadów, odpowiedzi E-mail/WhatsApp, obiekcje i follow-up',
+      calculator: 'Szybki konfigurator Tally 0–200 m², dostawa z Przemyśla i gotowy tekst wyceny do skopiowania',
       audit: 'Audyt umów i dokumentów PDF oraz porównywarka wersji v1 vs v2',
       knowledge: 'Kafelki wiedzy, import książek i wielkoformatowych PDF z dysku',
       chat: 'Rozmowa z bazą wiedzy firmy oraz weryfikacja online w Google',
@@ -120,12 +124,14 @@ export const UI_TEXT: Record<AppLanguage, UiDictionary> = {
     studioProLabel: 'Studio Pro',
     tabs: {
       responder: 'Sales Responder',
+      calculator: 'Quote Calculator',
       audit: 'Document Reader',
       knowledge: 'Knowledge Base',
       chat: 'Knowledge Chat',
     },
     tabDescriptions: {
       responder: 'Unified lead inbox, E-mail/WhatsApp replies, objections & follow-ups',
+      calculator: 'Live Tally configurator 0–200 m², delivery from Przemyśl & copy-ready offer text',
       audit: 'Contract & PDF compliance audit plus v1 vs v2 version comparison',
       knowledge: 'Knowledge tiles, structured book ingestion & arbitrary-size PDFs',
       chat: 'Interactive company knowledge chat with live web verification',

@@ -3,6 +3,7 @@ import {
   Activity,
   BookOpen,
   Building2,
+  Calculator,
   ChevronDown,
   Crown,
   Download,
@@ -56,6 +57,7 @@ interface BeforeInstallPromptEvent extends Event {
 }
 import { UI_TEXT } from './utils/i18n';
 import { SalesResponderView } from './components/SalesResponderView';
+import { CalculatorAssistantView } from './components/CalculatorAssistantView';
 import { AuditView } from './components/AuditView';
 import { KnowledgeView } from './components/KnowledgeView';
 import { ChatView } from './components/ChatView';
@@ -766,6 +768,19 @@ export function App() {
 
             <button
               type="button"
+              onClick={() => setActiveTab('calculator')}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all duration-200 ${
+                activeTab === 'calculator'
+                  ? 'bg-gradient-to-r from-emerald-700 to-teal-900 text-white shadow-md shadow-emerald-950/15'
+                  : 'text-slate-600 hover:bg-white/60 hover:text-slate-900'
+              }`}
+            >
+              <Calculator className={`h-3.5 w-3.5 ${activeTab === 'calculator' ? 'text-emerald-300' : 'text-emerald-600'}`} />
+              {ui.tabs.calculator}
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('audit')}
               className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all duration-200 ${
                 activeTab === 'audit'
@@ -929,10 +944,11 @@ export function App() {
       </header>
 
       {/* Main Content Workspace */}
-      <main className={`mx-auto px-4 pt-5 sm:px-6 ${activeTab === 'responder' ? 'max-w-[1580px]' : 'max-w-7xl'}`}>
+      <main className={`mx-auto px-4 pt-5 sm:px-6 ${activeTab === 'responder' || activeTab === 'calculator' ? 'max-w-[1580px]' : 'max-w-7xl'}`}>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200/70 bg-white/65 px-4 py-2.5 text-[11px] text-slate-600 backdrop-blur-sm">
           <span className="font-medium">
             {activeTab === 'responder' && ui.tabDescriptions.responder}
+            {activeTab === 'calculator' && ui.tabDescriptions.calculator}
             {activeTab === 'audit' && ui.tabDescriptions.audit}
             {activeTab === 'knowledge' && ui.tabDescriptions.knowledge}
             {activeTab === 'chat' && ui.tabDescriptions.chat}
@@ -1007,6 +1023,17 @@ export function App() {
               };
               void handleTilesChangeWithCloud([newTile, ...currentTiles]);
               showToast('Dodano odkrytą informację do Bazy Wiedzy');
+            }}
+            onLogAiCall={appendLog}
+          />
+        )}
+
+        {activeTab === 'calculator' && (
+          <CalculatorAssistantView
+            onCreateCrmDeal={handleCreateCrmDeal}
+            onHandoffToResponder={(text) => {
+              setHandoffResponderText(text);
+              setActiveTab('responder');
             }}
             onLogAiCall={appendLog}
           />

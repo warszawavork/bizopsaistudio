@@ -2,6 +2,7 @@ export type AppTheme = 'light' | 'warm' | 'dark';
 
 export type AppTab =
   | 'responder'
+  | 'calculator'
   | 'audit'
   | 'knowledge'
   | 'chat'
