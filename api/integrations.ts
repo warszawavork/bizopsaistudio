@@ -1202,62 +1202,107 @@ export default async function handler(
         return;
       }
 
+      const destQuery = /polsk|poland/i.test(destination) ? destination : `${destination}, Polska`;
       const apiKey = String(process.env.GOOGLE_MAPS_API_KEY || '').trim();
-      if (!apiKey) {
+
+      if (apiKey) {
+        const url = new URL('https://maps.googleapis.com/maps/api/distancematrix/json');
+        url.searchParams.set('origins', 'Przemyśl, Polska');
+        url.searchParams.set('destinations', destQuery);
+        url.searchParams.set('mode', 'driving');
+        url.searchParams.set('language', 'pl');
+        url.searchParams.set('region', 'pl');
+        url.searchParams.set('key', apiKey);
+
+        const gmRes = await fetch(url.toString());
+        const gmData = (await gmRes.json().catch(() => ({}))) as {
+          status?: string;
+          error_message?: string;
+          origin_addresses?: string[];
+          destination_addresses?: string[];
+          rows?: Array<{
+            elements?: Array<{
+              status?: string;
+              distance?: { value: number; text: string };
+              duration?: { value: number; text: string };
+            }>;
+          }>;
+        };
+
+        const el = gmData.rows?.[0]?.elements?.[0];
+        if (gmRes.ok && gmData.status === 'OK' && el && el.status === 'OK' && el.distance) {
+          const distanceKm = Math.max(1, Math.round(el.distance.value / 1000));
+          sendJson(res, 200, {
+            success: true,
+            provider: 'google',
+            distanceKm,
+            distanceText: el.distance.text,
+            durationText: el.duration?.text || '',
+            originAddress: gmData.origin_addresses?.[0] || 'Przemyśl, Polska',
+            destinationAddress: gmData.destination_addresses?.[0] || destination,
+          });
+          return;
+        }
+      }
+
+      // Darmowy fallback bez klucza API: OpenStreetMap Nominatim + OSRM (Przemyśl: 49.7839, 22.7673)
+      const nomUrl = new URL('https://nominatim.openstreetmap.org/search');
+      nomUrl.searchParams.set('q', destQuery);
+      nomUrl.searchParams.set('format', 'json');
+      nomUrl.searchParams.set('limit', '1');
+      nomUrl.searchParams.set('countrycodes', 'pl');
+
+      const nomRes = await fetch(nomUrl.toString(), {
+        headers: {
+          'User-Agent': 'BizOpsAIStudio/1.0 (https://baihelp.vercel.app)',
+          'Accept-Language': 'pl',
+        },
+      });
+      const nomData = (await nomRes.json().catch(() => [])) as Array<{
+        lat: string;
+        lon: string;
+        display_name?: string;
+      }>;
+
+      if (!nomRes.ok || !Array.isArray(nomData) || nomData.length === 0) {
         sendJson(res, 400, {
-          error: 'Brak zmiennej GOOGLE_MAPS_API_KEY na Vercelu. Możesz wpisać kilometry ręcznie.',
-          missingKey: true,
+          error: 'Nie znaleziono podanego adresu lub kodu pocztowego w Polsce. Spróbuj wpisać np. „35-001 Rzeszów”.',
         });
         return;
       }
 
-      const destQuery = /polsk|poland/i.test(destination) ? destination : `${destination}, Polska`;
-      const url = new URL('https://maps.googleapis.com/maps/api/distancematrix/json');
-      url.searchParams.set('origins', 'Przemyśl, Polska');
-      url.searchParams.set('destinations', destQuery);
-      url.searchParams.set('mode', 'driving');
-      url.searchParams.set('language', 'pl');
-      url.searchParams.set('region', 'pl');
-      url.searchParams.set('key', apiKey);
-
-      const gmRes = await fetch(url.toString());
-      const gmData = (await gmRes.json().catch(() => ({}))) as {
-        status?: string;
-        error_message?: string;
-        origin_addresses?: string[];
-        destination_addresses?: string[];
-        rows?: Array<{
-          elements?: Array<{
-            status?: string;
-            distance?: { value: number; text: string };
-            duration?: { value: number; text: string };
-          }>;
-        }>;
+      const targetLat = Number(nomData[0].lat);
+      const targetLon = Number(nomData[0].lon);
+      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/22.7673,49.7839;${targetLon},${targetLat}?overview=false`;
+      const osrmRes = await fetch(osrmUrl);
+      const osrmData = (await osrmRes.json().catch(() => ({}))) as {
+        code?: string;
+        routes?: Array<{ distance: number; duration: number }>;
       };
 
-      if (!gmRes.ok || gmData.status !== 'OK') {
+      const route = osrmData.routes?.[0];
+      if (!osrmRes.ok || osrmData.code !== 'Ok' || !route) {
         sendJson(res, 400, {
-          error: gmData.error_message || `Błąd Google Maps API (${gmData.status || gmRes.status}).`,
+          error: 'Nie udało się wyliczyć trasy drogowej z Przemyśla do tego punktu.',
         });
         return;
       }
 
-      const el = gmData.rows?.[0]?.elements?.[0];
-      if (!el || el.status !== 'OK' || !el.distance) {
-        sendJson(res, 400, {
-          error: 'Nie znaleziono trasy drogowej z Przemyśla do podanego adresu/kodu.',
-        });
-        return;
-      }
+      const distanceKm = Math.max(1, Math.round(route.distance / 1000));
+      const totalMins = Math.max(1, Math.round(route.duration / 60));
+      const hrs = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+      const durationText = hrs > 0 ? `${hrs} godz. ${mins} min` : `${mins} min`;
+      const shortDisplay = (nomData[0].display_name || destination).split(',').slice(0, 3).join(',').trim();
 
-      const distanceKm = Math.max(1, Math.round(el.distance.value / 1000));
       sendJson(res, 200, {
         success: true,
+        provider: 'osrm',
         distanceKm,
-        distanceText: el.distance.text,
-        durationText: el.duration?.text || '',
-        originAddress: gmData.origin_addresses?.[0] || 'Przemyśl, Polska',
-        destinationAddress: gmData.destination_addresses?.[0] || destination,
+        distanceText: `${distanceKm} km`,
+        durationText,
+        originAddress: 'Przemyśl, Polska',
+        destinationAddress: shortDisplay,
       });
       return;
     }
